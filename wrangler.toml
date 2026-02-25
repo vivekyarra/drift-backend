@@ -4,4 +4,4 @@ compatibility_date = "2026-02-24"
 
 [vars]
 # Non-secret runtime config.
-SUPABASE_URL = "https://jsrcfnvzbnyoulsieuo.supabase.co"
+SUPABASE_URL = "https://jsxrcfnvzbnyoulsieuo.supabase.co"

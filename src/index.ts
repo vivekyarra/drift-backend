@@ -99,6 +99,10 @@ export default {
       const path = normalizePath(url.pathname);
       const routeKey = `${request.method.toUpperCase()} ${path}`;
 
+      if (request.method.toUpperCase() === "GET" && path === "/") {
+        return jsonResponse({ status: "ok" }, 200);
+      }
+
       const handler = ROUTES.get(routeKey);
       if (!handler) {
         const chatMatch = matchChatPath(path);
