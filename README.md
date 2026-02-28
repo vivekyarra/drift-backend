@@ -1,87 +1,131 @@
-# Drift Backend (Phase 1)
+# Drift Backend (VoidVault API)
 
-Production-grade Cloudflare Worker backend for Drift Phase 1 using Supabase Postgres with a custom session model.
+Production Cloudflare Workers backend for VoidVault.
 
-## Routes
+## Stack
+- Cloudflare Workers (TypeScript)
+- Supabase Postgres (`@supabase/supabase-js`, service-role only)
+- Cookie/session auth (custom, no Supabase Auth)
+- Cloudinary signed upload support (URL-only media flow)
 
+## Architecture
+Browser -> Frontend (Pages) -> Worker API -> Supabase + Cloudinary
+
+Frontend never talks directly to Supabase for auth/session operations.
+
+## Core Capabilities
+- Username + recovery-key auth
+- Session cookies + DB-backed sessions
+- Feed with cursor pagination
+- Follows, chats, notifications
+- Advice flows
+- Reactions, saves, comments, reports
+- Admin moderation APIs
+
+## Security Controls
+- Strict single-origin CORS
+- CSRF validation for mutating requests
+- IP rate limiting + abuse controls
+- Input sanitization and body-size limits
+- Security headers (CSP, HSTS, X-Frame-Options, Referrer-Policy, etc.)
+- Service-role DB access only from backend
+- Recovery/session tokens stored hashed in DB
+
+## API Surface
+### Public
+- `GET /`
+- `GET /username/suggest`
 - `POST /register`
-- `POST /post` (authenticated)
+- `POST /login`
+
+### Authenticated
+- `POST /logout`
+- `GET /me`
 - `GET /feed`
-- `GET /me` (authenticated)
-- `POST /follow` (authenticated)
-- `DELETE /follow` (authenticated)
-- `POST /chat/start` (authenticated)
-- `GET /chat/:conversation_id/messages` (authenticated)
-- `POST /chat/:conversation_id/message` (authenticated)
+- `POST /post`
+- `DELETE /post`
+- `POST /report`
+- `GET /search`
+- `GET /notifications`
+- `GET /profile`
+- `PATCH /profile`
+- `GET /follow`
+- `POST /follow`
+- `DELETE /follow`
+- `GET /chat/list`
+- `POST /chat/start`
+- `GET /chat/:conversation_id/messages`
+- `POST /chat/:conversation_id/message`
+- `POST /account/recovery/rotate`
+- `POST /account/deactivate`
+- `DELETE /account`
+
+### Admin (requires `X-Admin-Secret`)
+- `GET /admin/overview`
+- `GET /admin/users`
+- `DELETE /admin/user`
+- `POST /admin/user/moderation`
+- `GET /admin/posts`
+- `POST /admin/post/hide`
+- `POST /admin/post/delete`
+- `GET /admin/reports`
 
 ## Environment Variables
-
+Required:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `FRONTEND_ORIGIN`
+- `CLOUDINARY_CLOUD_NAME`
 
-`SUPABASE_SERVICE_ROLE_KEY` must be configured as a Wrangler secret.
+Optional:
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `ADMIN_API_KEY`
 
-## Setup
-
-1. Install dependencies:
-
+## Local Development
 ```bash
 cd backend
 npm install
-```
-
-2. Apply database migration:
-   - Run these migrations in order:
-     - [`supabase/migrations/001_phase1_foundation.sql`](./supabase/migrations/001_phase1_foundation.sql)
-     - [`supabase/migrations/002_phase2_social_chat.sql`](./supabase/migrations/002_phase2_social_chat.sql)
-   - Execute them in Supabase SQL Editor (or your migration pipeline).
-
-3. Configure runtime variables:
-   - Set `SUPABASE_URL` in [`wrangler.toml`](./wrangler.toml) `[vars]`.
-   - Set service key secret:
-
-```bash
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-```
-
-4. Local development:
-   - Optional local-only secrets in `.dev.vars`:
-
-```env
-SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
-```
-
-   - Start worker:
-
-```bash
 npm run dev
 ```
 
-5. Type check:
+Use `backend/.dev.vars`:
+```env
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+FRONTEND_ORIGIN=http://localhost:5173
+CLOUDINARY_CLOUD_NAME=your-cloud-name
+CLOUDINARY_API_KEY=optional
+CLOUDINARY_API_SECRET=optional
+ADMIN_API_KEY=optional
+```
 
+## Quality Checks
 ```bash
 npm run typecheck
+npm run test
 ```
 
-## Production Deployment
-
-1. Push repository to GitHub.
-2. Connect repo in Cloudflare Workers (GitHub auto-deploy).
-3. Configure production vars/secrets in Cloudflare:
-   - `SUPABASE_URL` (plain var)
-   - `SUPABASE_SERVICE_ROLE_KEY` (secret)
-4. Deploy:
-
+## Deploy
 ```bash
-npm run deploy
+cd backend
+npx wrangler deploy
 ```
 
-## Manual Steps Required
+Set secrets in Cloudflare before production deploy:
+```bash
+wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+wrangler secret put CLOUDINARY_API_SECRET
+wrangler secret put ADMIN_API_KEY
+```
 
-1. Run the SQL migration in Supabase (`backend/supabase/migrations/001_phase1_foundation.sql`).
-   - Then run `backend/supabase/migrations/002_phase2_social_chat.sql`.
-2. Configure Cloudflare Worker environment values:
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-3. Ensure the worker only uses the service role key (no Supabase public client in backend runtime).
+## Database Migrations
+Apply in order under `backend/supabase/migrations`:
+1. `001_phase1_foundation.sql`
+2. `002_phase2_social_chat.sql`
+3. `003_phase2_moderation_media.sql`
+4. `004_phase3_security_profile_admin.sql`
+5. `005_phase4_social_advice_engagement.sql`
+
+## Repository
+- GitHub: https://github.com/vivekyarra/drift-backend

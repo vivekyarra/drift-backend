@@ -13,8 +13,29 @@ export function jsonResponse(
 ): Response {
   const mergedHeaders = new Headers(BASE_HEADERS);
   if (headers) {
-    const inputHeaders = new Headers(headers);
-    inputHeaders.forEach((value, key) => mergedHeaders.set(key, value));
+    const inputHeaders = headers instanceof Headers ? headers : new Headers(headers);
+
+    // Preserve multiple Set-Cookie headers instead of collapsing to one.
+    const maybeGetSetCookie = (
+      inputHeaders as Headers & { getSetCookie?: () => string[] }
+    ).getSetCookie;
+    if (typeof maybeGetSetCookie === "function") {
+      for (const cookie of maybeGetSetCookie.call(inputHeaders)) {
+        mergedHeaders.append("Set-Cookie", cookie);
+      }
+    } else {
+      const singleSetCookie = inputHeaders.get("set-cookie");
+      if (singleSetCookie) {
+        mergedHeaders.append("Set-Cookie", singleSetCookie);
+      }
+    }
+
+    inputHeaders.forEach((value, key) => {
+      if (key.toLowerCase() === "set-cookie") {
+        return;
+      }
+      mergedHeaders.set(key, value);
+    });
   }
 
   return new Response(JSON.stringify(payload), {
@@ -71,4 +92,40 @@ export function clientIpFromRequest(request: Request): string {
   }
 
   return "unknown";
+}
+
+export function parseIsoTimestampParam(
+  value: string | null,
+  invalidMessage: string,
+): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new HttpError(400, invalidMessage);
+  }
+
+  return parsed.toISOString();
+}
+
+export function parsePositiveIntParam(
+  value: string | null,
+  options: {
+    min: number;
+    max: number;
+    fallback: number;
+    invalidMessage: string;
+  },
+): number {
+  if (!value) {
+    return options.fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < options.min || parsed > options.max) {
+    throw new HttpError(400, options.invalidMessage);
+  }
+  return parsed;
 }

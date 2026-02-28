@@ -1,3 +1,8 @@
 .dev.vars
 node_modules
 .wrangler
+cookies.txt
+headers.txt
+register.json
+*.tmp
+*.local

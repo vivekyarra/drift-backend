@@ -1,7 +1,14 @@
 import { requireSession } from "../middleware/auth";
+import { enforceActionLimit } from "../middleware/abuseGuard";
 import type { AppContext } from "../types";
 import { HttpError } from "../utils/errors";
-import { jsonResponse, parseJsonBody } from "../utils/http";
+import {
+  jsonResponse,
+  parseIsoTimestampParam,
+  parsePositiveIntParam,
+  parseJsonBody,
+} from "../utils/http";
+import { createNotification } from "../utils/notifications";
 import { sanitizeContent, sanitizeUuid } from "../utils/sanitize";
 
 const MAX_MESSAGE_LENGTH = 2_000;
@@ -81,6 +88,14 @@ async function assertTargetUserExists(ctx: AppContext, targetUserId: string) {
 
 export async function handleStartChat(ctx: AppContext): Promise<Response> {
   await requireSession(ctx);
+  enforceActionLimit({
+    actorKey: ctx.session!.userId,
+    action: "chat.start",
+    limit: 20,
+    windowMs: 60_000,
+    minIntervalMs: 1_000,
+    errorCode: "CHAT_START_SPAM",
+  });
 
   const body = await parseJsonBody<StartChatRequestBody>(ctx.request);
   const targetUserId = sanitizeUuid(body.user_id);
@@ -158,19 +173,44 @@ export async function handleGetConversationMessages(
 
   await assertConversationMember(ctx, conversationId);
 
-  const { data: messages, error } = await ctx.supabase
+  const requestUrl = new URL(ctx.request.url);
+  const before = parseIsoTimestampParam(
+    requestUrl.searchParams.get("before"),
+    "Invalid before cursor",
+  );
+  const limit = parsePositiveIntParam(requestUrl.searchParams.get("limit"), {
+    min: 1,
+    max: 50,
+    fallback: 30,
+    invalidMessage: "limit must be between 1 and 50",
+  });
+
+  let query = ctx.supabase
     .from("messages")
     .select("id,conversation_id,sender_id,content,created_at")
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(200);
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (before) {
+    query = query.lt("created_at", before);
+  }
+
+  const { data: messages, error } = await query;
 
   if (error) {
     throw new HttpError(500, "Failed to fetch messages", { expose: false });
   }
 
+  const safeMessages = messages ?? [];
+  const nextCursor =
+    safeMessages.length > 0
+      ? safeMessages[safeMessages.length - 1].created_at
+      : null;
+
   return jsonResponse({
-    messages: messages ?? [],
+    messages: safeMessages,
+    nextCursor,
   });
 }
 
@@ -179,6 +219,14 @@ export async function handleSendConversationMessage(
   rawConversationId: string,
 ): Promise<Response> {
   await requireSession(ctx);
+  enforceActionLimit({
+    actorKey: ctx.session!.userId,
+    action: "chat.message",
+    limit: 45,
+    windowMs: 60_000,
+    minIntervalMs: 400,
+    errorCode: "CHAT_FLOOD",
+  });
 
   const conversationId = sanitizeUuid(rawConversationId);
   if (!conversationId) {
@@ -208,6 +256,28 @@ export async function handleSendConversationMessage(
 
   if (error) {
     throw new HttpError(500, "Failed to send message", { expose: false });
+  }
+
+  const memberResult = await ctx.supabase
+    .from("conversation_members")
+    .select("user_id")
+    .eq("conversation_id", conversationId);
+
+  if (!memberResult.error) {
+    for (const member of memberResult.data ?? []) {
+      if (member.user_id === ctx.session!.userId) {
+        continue;
+      }
+      await createNotification(ctx, {
+        recipientId: member.user_id,
+        actorId: ctx.session!.userId,
+        type: "message",
+        title: "New message",
+        body: `@${ctx.session!.username}: ${content.slice(0, 80)}`,
+        entityType: "conversation",
+        entityId: conversationId,
+      });
+    }
   }
 
   return jsonResponse(

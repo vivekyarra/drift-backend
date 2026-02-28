@@ -1,5 +1,7 @@
 import { requireSession } from "../middleware/auth";
+import { enforceActionLimit } from "../middleware/abuseGuard";
 import type { AppContext } from "../types";
+import { extractCloudinaryPublicId } from "../utils/cloudinary";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
 import {
@@ -36,8 +38,16 @@ function sanitizeImageBlurhash(value: unknown): string | null {
 
 export async function handleCreatePost(ctx: AppContext): Promise<Response> {
   await requireSession(ctx);
+  enforceActionLimit({
+    actorKey: ctx.session!.userId,
+    action: "post.create",
+    limit: 8,
+    windowMs: 60_000,
+    minIntervalMs: 3_000,
+    errorCode: "POST_SPAM",
+  });
 
-  const body = await parseJsonBody<CreatePostRequestBody>(ctx.request);
+  const body = await parseJsonBody<CreatePostRequestBody>(ctx.request, 12_288);
   const channel = sanitizeChannel(body.channel);
   const content = sanitizeContent(body.content, 500);
   const hasImageUrlField = Object.prototype.hasOwnProperty.call(body, "image_url");
@@ -46,7 +56,9 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
     "image_blurhash",
   );
 
-  const imageUrl = hasImageUrlField ? sanitizeImageUrl(body.image_url) : null;
+  const imageUrl = hasImageUrlField
+    ? sanitizeImageUrl(body.image_url, ctx.config.cloudinaryCloudName)
+    : null;
   const imageBlurhash = hasImageBlurhashField
     ? sanitizeImageBlurhash(body.image_blurhash)
     : null;
@@ -63,15 +75,26 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
   }
 
   if (hasImageUrlField && !imageUrl) {
-    throw new HttpError(400, "image_url must be a valid HTTPS URL");
+    throw new HttpError(
+      400,
+      "image_url must be a valid Cloudinary secure URL for the configured cloud",
+    );
   }
 
   if (hasImageBlurhashField && !imageBlurhash) {
     throw new HttpError(400, "image_blurhash must be a non-empty string <= 200 chars");
   }
 
+  const imagePublicId = imageUrl
+    ? extractCloudinaryPublicId(imageUrl, ctx.config.cloudinaryCloudName)
+    : null;
+
+  if (imageUrl && !imagePublicId) {
+    throw new HttpError(400, "Unable to derive Cloudinary public_id from image_url");
+  }
+
   const expiresAt = new Date(Date.now() + FIFTEEN_DAYS_MS).toISOString();
-  const { data: post, error: insertError } = await ctx.supabase
+  const primaryInsert = await ctx.supabase
     .from("posts")
     .insert({
       user_id: ctx.session!.userId,
@@ -79,16 +102,43 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
       content,
       image_url: imageUrl,
       image_blurhash: imageBlurhash,
+      image_public_id: imagePublicId,
       expires_at: expiresAt,
+      hidden: ctx.session!.isShadowBanned,
     })
     .select(
-      "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,trust_weight,report_count",
+      "id,user_id,channel,content,image_url,image_blurhash,image_public_id,created_at,expires_at,trust_weight,report_count",
     )
     .single();
 
-  if (insertError) {
-    throw new HttpError(500, "Failed to create post", { expose: false });
+  if (!primaryInsert.error) {
+    return jsonResponse({ post: primaryInsert.data }, 201);
   }
 
-  return jsonResponse({ post }, 201);
+  if (primaryInsert.error.code === "42703") {
+    const fallbackInsert = await ctx.supabase
+      .from("posts")
+      .insert({
+        user_id: ctx.session!.userId,
+        channel,
+        content,
+        image_url: imageUrl,
+        image_blurhash: imageBlurhash,
+        expires_at: expiresAt,
+        hidden: ctx.session!.isShadowBanned,
+      })
+      .select(
+        "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,trust_weight,report_count",
+      )
+      .single();
+
+    if (!fallbackInsert.error) {
+      return jsonResponse({ post: fallbackInsert.data }, 201);
+    }
+  }
+
+  if (primaryInsert.error) {
+    throw new HttpError(500, "Failed to create post", { expose: false });
+  }
+  throw new HttpError(500, "Failed to create post", { expose: false });
 }

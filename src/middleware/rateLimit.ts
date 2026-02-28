@@ -1,7 +1,7 @@
-import { jsonResponse, clientIpFromRequest } from "../utils/http";
+import { jsonResponse } from "../utils/http";
 
 const WINDOW_MS = 60_000;
-const MAX_REQUESTS_PER_WINDOW = 5;
+const MAX_REQUESTS_PER_WINDOW = 30;
 
 interface RateLimitEntry {
   count: number;
@@ -22,7 +22,7 @@ function cleanupExpiredEntries(nowMs: number) {
 
 export function enforceRateLimit(request: Request): Response | null {
   const nowMs = Date.now();
-  const clientIp = clientIpFromRequest(request);
+  const clientIp = request.headers.get("cf-connecting-ip")?.trim() ?? "unknown";
   const existingEntry = rateLimitStore.get(clientIp);
 
   if (!existingEntry || nowMs - existingEntry.windowStartMs >= WINDOW_MS) {

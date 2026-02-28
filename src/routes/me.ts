@@ -8,7 +8,7 @@ export async function handleMe(ctx: AppContext): Promise<Response> {
 
   const { data: user, error } = await ctx.supabase
     .from("users")
-    .select("id,username,trust_score,created_at")
+    .select("id,username,created_at")
     .eq("id", ctx.session!.userId)
     .maybeSingle();
 
@@ -17,8 +17,12 @@ export async function handleMe(ctx: AppContext): Promise<Response> {
   }
 
   if (!user) {
-    throw new HttpError(404, "User not found");
+    throw new HttpError(401, "Unauthorized");
   }
 
-  return jsonResponse({ user });
+  return jsonResponse({
+    id: user.id,
+    username: user.username,
+    created_at: user.created_at,
+  });
 }

@@ -5,3 +5,9 @@ compatibility_date = "2026-02-24"
 [vars]
 # Non-secret runtime config.
 SUPABASE_URL = "https://jsxrcfnvzbnyoulsieuo.supabase.co"
+FRONTEND_ORIGIN = "https://voidvault.pages.dev"
+CLOUDINARY_CLOUD_NAME = "ddmv3ty6w"
+# Optional secrets for backend-driven Cloudinary delete:
+# CLOUDINARY_API_KEY (secret)
+# CLOUDINARY_API_SECRET (secret)
+# ADMIN_API_KEY (secret) for admin endpoints

@@ -1,16 +1,43 @@
 import { requireSession } from "../middleware/auth";
 import type { AppContext } from "../types";
-import { HttpError } from "../utils/errors";
-import { jsonResponse } from "../utils/http";
+import { HttpError, isHttpError } from "../utils/errors";
+import {
+  jsonResponse,
+  parseIsoTimestampParam,
+  parsePositiveIntParam,
+} from "../utils/http";
+import { fetchPostEngagement } from "../utils/postEngagement";
 
 export async function handleFeed(ctx: AppContext): Promise<Response> {
   const requestUrl = new URL(ctx.request.url);
   const followingOnly = requestUrl.searchParams.get("following_only") === "true";
+  const cursor = parseIsoTimestampParam(
+    requestUrl.searchParams.get("cursor"),
+    "Invalid cursor",
+  );
+  const limit = parsePositiveIntParam(requestUrl.searchParams.get("limit"), {
+    min: 1,
+    max: 50,
+    fallback: 20,
+    invalidMessage: "limit must be between 1 and 50",
+  });
   let followedUserIds: string[] | null = null;
+  let viewerUserId: string | null = null;
+
+  try {
+    await requireSession(ctx);
+    viewerUserId = ctx.session!.userId;
+  } catch (error) {
+    if (followingOnly) {
+      throw error;
+    }
+
+    if (!isHttpError(error) || (error.status !== 401 && error.status !== 403)) {
+      throw error;
+    }
+  }
 
   if (followingOnly) {
-    await requireSession(ctx);
-
     const { data: follows, error: followsError } = await ctx.supabase
       .from("follows")
       .select("following_id")
@@ -24,31 +51,128 @@ export async function handleFeed(ctx: AppContext): Promise<Response> {
 
     followedUserIds = (follows ?? []).map((follow) => follow.following_id);
     if (followedUserIds.length === 0) {
-      return jsonResponse({ posts: [] });
+      return jsonResponse({
+        posts: [],
+        nextCursor: null,
+      });
     }
   }
 
   const nowIso = new Date().toISOString();
-  let query = ctx.supabase
-    .from("posts")
-    .select(
-      "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,trust_weight,report_count",
-    )
-    .eq("hidden", false)
-    .gt("expires_at", nowIso)
-    .order("created_at", { ascending: false })
-    .limit(50);
+  const runFeedQuery = async (withDeletedFilter: boolean) => {
+    let query = ctx.supabase
+      .from("posts")
+      .select("id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at")
+      .eq("hidden", false)
+      .gt("expires_at", nowIso)
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
-  if (followingOnly) {
-    query = query.in("user_id", followedUserIds!);
+    if (withDeletedFilter) {
+      query = query.is("deleted_at", null);
+    }
+
+    if (followingOnly) {
+      query = query.in("user_id", followedUserIds!);
+    }
+
+    if (cursor) {
+      query = query.lt("created_at", cursor);
+    }
+
+    return query;
+  };
+
+  let { data: posts, error } = await runFeedQuery(true);
+  if (error?.code === "42703") {
+    // Backward-compatible fallback when deleted_at is not migrated yet.
+    ({ data: posts, error } = await runFeedQuery(false));
   }
 
-  const { data: posts, error } = await query;
   if (error) {
     throw new HttpError(500, "Failed to fetch feed", { expose: false });
   }
 
+  const safePosts = posts ?? [];
+  const postAuthorIds = [...new Set(safePosts.map((post) => post.user_id))];
+  let userMap = new Map<
+    string,
+    {
+      username: string;
+      isShadowBanned: boolean;
+    }
+  >();
+
+  if (postAuthorIds.length > 0) {
+    const primaryAuthors = await ctx.supabase
+      .from("users")
+      .select("id,username,is_shadow_banned")
+      .in("id", postAuthorIds);
+
+    let authors = primaryAuthors.data;
+    let authorsError = primaryAuthors.error;
+
+    if (authorsError?.code === "42703") {
+      const fallbackAuthors = await ctx.supabase
+        .from("users")
+        .select("id,username")
+        .in("id", postAuthorIds);
+
+      authors = fallbackAuthors.data
+        ? fallbackAuthors.data.map((user) => ({
+            ...user,
+            is_shadow_banned: false,
+          }))
+        : null;
+      authorsError = fallbackAuthors.error;
+    }
+
+    if (authorsError) {
+      throw new HttpError(500, "Failed to build feed", { expose: false });
+    }
+
+    userMap = new Map(
+      (authors ?? []).map((author) => [
+        author.id,
+        {
+          username: author.username,
+          isShadowBanned: Boolean(author.is_shadow_banned),
+        },
+      ]),
+    );
+  }
+
+  const mappedPosts = safePosts
+    .filter((post) => {
+      const author = userMap.get(post.user_id);
+      return !author?.isShadowBanned;
+    })
+    .map((post) => ({
+      ...post,
+      username: userMap.get(post.user_id)?.username ?? "unknown",
+    }));
+
+  const engagementMap = await fetchPostEngagement(
+    ctx,
+    mappedPosts.map((post) => post.id),
+    viewerUserId,
+  );
+
+  const nextCursor =
+    mappedPosts.length > 0 ? mappedPosts[mappedPosts.length - 1].created_at : null;
+
   return jsonResponse({
-    posts: posts ?? [],
-  });
+      posts: mappedPosts.map((post) => ({
+        ...post,
+        engagement: engagementMap.get(post.id) ?? null,
+      })),
+      nextCursor,
+    },
+    200,
+    {
+      "Cache-Control": followingOnly
+        ? "private, no-store"
+        : "public, max-age=15, s-maxage=30, stale-while-revalidate=60",
+    },
+  );
 }
