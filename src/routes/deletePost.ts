@@ -7,6 +7,7 @@ import {
 } from "../utils/cloudinary";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
+import { logAsyncWarning } from "../utils/logger";
 import { sanitizeUuid } from "../utils/sanitize";
 
 interface DeletePostRequestBody {
@@ -63,13 +64,21 @@ async function hardDeletePost(
   postId: string,
   ownerUserId: string,
 ): Promise<void> {
-  const deletion = await ctx.supabase
-    .from("posts")
-    .delete()
-    .eq("id", postId)
-    .eq("user_id", ownerUserId)
-    .select("id")
-    .maybeSingle();
+  const performDelete = async () =>
+    ctx.supabase
+      .from("posts")
+      .delete()
+      .eq("id", postId)
+      .eq("user_id", ownerUserId)
+      .select("id")
+      .maybeSingle();
+
+  let deletion = await performDelete();
+
+  if (deletion.error?.code === "23503") {
+    await cleanupDependentPostRows(ctx, postId);
+    deletion = await performDelete();
+  }
 
   if (deletion.error) {
     throw new HttpError(500, "Failed to delete post", { expose: false });
@@ -80,6 +89,15 @@ async function hardDeletePost(
   }
 
   // Best-effort cleanup for tables that may not have FK constraints.
+  const adminActionsCleanup = await ctx.supabase
+    .from("admin_actions")
+    .delete()
+    .eq("target_post_id", postId);
+
+  if (adminActionsCleanup.error && adminActionsCleanup.error.code !== "42P01") {
+    throw new HttpError(500, "Failed to finalize post deletion", { expose: false });
+  }
+
   const reportsCleanup = await ctx.supabase
     .from("reports")
     .delete()
@@ -88,6 +106,23 @@ async function hardDeletePost(
 
   if (reportsCleanup.error && reportsCleanup.error.code !== "42P01") {
     throw new HttpError(500, "Failed to finalize post deletion", { expose: false });
+  }
+}
+
+async function cleanupDependentPostRows(ctx: AppContext, postId: string): Promise<void> {
+  const results = await Promise.all([
+    ctx.supabase.from("comments").delete().eq("post_id", postId),
+    ctx.supabase.from("post_reactions").delete().eq("post_id", postId),
+    ctx.supabase.from("saved_posts").delete().eq("post_id", postId),
+    ctx.supabase.from("reports").delete().eq("content_type", "post").eq("content_id", postId),
+    ctx.supabase.from("admin_actions").delete().eq("target_post_id", postId),
+    ctx.supabase.from("notifications").delete().eq("entity_type", "post").eq("entity_id", postId),
+  ]);
+
+  for (const result of results) {
+    if (result.error && result.error.code !== "42P01" && result.error.code !== "42703") {
+      throw new HttpError(500, "Failed to finalize post deletion", { expose: false });
+    }
   }
 }
 
@@ -124,7 +159,16 @@ export async function handleDeletePost(ctx: AppContext): Promise<Response> {
       : null);
 
   if (imagePublicId) {
-    await deleteCloudinaryImage(ctx.config, imagePublicId);
+    try {
+      await deleteCloudinaryImage(ctx.config, imagePublicId);
+    } catch {
+      // Deleting DB data is prioritized; media cleanup is best-effort.
+      logAsyncWarning(
+        ctx,
+        "post.delete.cloudinary_cleanup_failed",
+        "Cloudinary cleanup failed during post deletion",
+      );
+    }
   }
 
   await hardDeletePost(ctx, postId, ctx.session!.userId);

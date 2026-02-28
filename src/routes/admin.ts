@@ -1,7 +1,12 @@
 import { requireAdmin } from "../middleware/admin";
 import type { AppContext } from "../types";
+import {
+  deleteCloudinaryImage,
+  extractCloudinaryPublicId,
+} from "../utils/cloudinary";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody, parsePositiveIntParam } from "../utils/http";
+import { logAsyncWarning } from "../utils/logger";
 import { sanitizeUuid } from "../utils/sanitize";
 
 interface ModerateUserRequestBody {
@@ -117,48 +122,78 @@ export async function handleAdminDeletePost(ctx: AppContext): Promise<Response> 
     throw new HttpError(400, "post_id must be a valid UUID");
   }
 
-  const nowIso = new Date().toISOString();
-  const updatePrimary = await ctx.supabase
+  const postLookup = await ctx.supabase
     .from("posts")
-    .update({
-      hidden: true,
-      content: "[removed by admin]",
-      deleted_at: nowIso,
-      image_url: null,
-      image_blurhash: null,
-      image_public_id: null,
-    })
-    .eq("id", postId);
+    .select("id,image_url,image_public_id")
+    .eq("id", postId)
+    .maybeSingle();
 
-  if (updatePrimary.error && updatePrimary.error.code !== "42703") {
-    throw new HttpError(500, "Failed to remove post", { expose: false });
+  if (postLookup.error) {
+    throw new HttpError(500, "Failed to fetch post", { expose: false });
+  }
+  if (!postLookup.data) {
+    throw new HttpError(404, "Post not found");
   }
 
-  if (updatePrimary.error?.code === "42703") {
-    const updateFallback = await ctx.supabase
-      .from("posts")
-      .update({
-        hidden: true,
-        content: "[removed by admin]",
-        image_url: null,
-        image_blurhash: null,
-      })
-      .eq("id", postId);
+  const imagePublicId =
+    postLookup.data.image_public_id ??
+    (postLookup.data.image_url
+      ? extractCloudinaryPublicId(postLookup.data.image_url, ctx.config.cloudinaryCloudName)
+      : null);
 
-    if (updateFallback.error) {
-      throw new HttpError(500, "Failed to remove post", { expose: false });
+  if (imagePublicId) {
+    try {
+      await deleteCloudinaryImage(ctx.config, imagePublicId);
+    } catch {
+      logAsyncWarning(
+        ctx,
+        "admin.post.delete.cloudinary_cleanup_failed",
+        "Cloudinary cleanup failed during admin post deletion",
+      );
     }
   }
 
+  await cleanupPostDependencies(ctx, postId);
+
+  const deletion = await ctx.supabase
+    .from("posts")
+    .delete()
+    .eq("id", postId)
+    .select("id")
+    .maybeSingle();
+
+  if (deletion.error) {
+    throw new HttpError(500, "Failed to remove post", { expose: false });
+  }
+  if (!deletion.data) {
+    throw new HttpError(404, "Post not found");
+  }
+
   await logAdminAction(ctx, {
-    action: "delete_post",
-    targetPostId: postId,
+    action: `delete_post:${postId}`,
   });
 
   return jsonResponse({
     success: true,
     post_id: postId,
   });
+}
+
+async function cleanupPostDependencies(ctx: AppContext, postId: string): Promise<void> {
+  const results = await Promise.all([
+    ctx.supabase.from("comments").delete().eq("post_id", postId),
+    ctx.supabase.from("post_reactions").delete().eq("post_id", postId),
+    ctx.supabase.from("saved_posts").delete().eq("post_id", postId),
+    ctx.supabase.from("reports").delete().eq("content_type", "post").eq("content_id", postId),
+    ctx.supabase.from("admin_actions").delete().eq("target_post_id", postId),
+    ctx.supabase.from("notifications").delete().eq("entity_type", "post").eq("entity_id", postId),
+  ]);
+
+  for (const result of results) {
+    if (result.error && result.error.code !== "42P01" && result.error.code !== "42703") {
+      throw new HttpError(500, "Failed to remove post dependencies", { expose: false });
+    }
+  }
 }
 
 export async function handleAdminHidePost(ctx: AppContext): Promise<Response> {
