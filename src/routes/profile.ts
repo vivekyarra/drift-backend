@@ -244,6 +244,24 @@ export async function handleUpdateProfile(ctx: AppContext): Promise<Response> {
     throw new HttpError(400, "No valid profile fields provided");
   }
 
+  if (typeof patch.username === "string") {
+    const existingUser = await ctx.supabase
+      .from("users")
+      .select("id")
+      .eq("username", patch.username)
+      .neq("id", ctx.session!.userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingUser.error) {
+      throw new HttpError(500, "Failed to verify username", { expose: false });
+    }
+
+    if (existingUser.data) {
+      throw new HttpError(409, "Username is already taken");
+    }
+  }
+
   const update = await ctx.supabase
     .from("users")
     .update(patch)
