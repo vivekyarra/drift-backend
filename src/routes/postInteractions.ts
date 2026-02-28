@@ -62,7 +62,7 @@ export async function handleGetPostById(
     const baseQuery = ctx.supabase
       .from("posts")
       .select(
-        "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,hidden",
+        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,hidden",
       )
       .eq("id", postId)
       .eq("hidden", false)

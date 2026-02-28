@@ -3,7 +3,9 @@ import { enforceActionLimit } from "../middleware/abuseGuard";
 import type { AppContext } from "../types";
 import {
   deleteCloudinaryImage,
+  deleteCloudinaryVideo,
   extractCloudinaryPublicId,
+  extractCloudinaryVideoPublicId,
 } from "../utils/cloudinary";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
@@ -19,6 +21,8 @@ interface PostDeleteRecord {
   user_id: string;
   image_url: string | null;
   image_public_id: string | null;
+  video_url: string | null;
+  video_public_id: string | null;
 }
 
 async function getPostForDeletion(
@@ -27,7 +31,7 @@ async function getPostForDeletion(
 ): Promise<PostDeleteRecord | null> {
   const primarySelect = await ctx.supabase
     .from("posts")
-    .select("id,user_id,image_url,image_public_id")
+    .select("id,user_id,image_url,image_public_id,video_url,video_public_id")
     .eq("id", postId)
     .maybeSingle();
 
@@ -36,6 +40,27 @@ async function getPostForDeletion(
   }
 
   if (primarySelect.error.code !== "42703") {
+    throw new HttpError(500, "Failed to fetch post", { expose: false });
+  }
+
+  const fallbackSelectWithVideo = await ctx.supabase
+    .from("posts")
+    .select("id,user_id,image_url,video_url")
+    .eq("id", postId)
+    .maybeSingle();
+
+  if (!fallbackSelectWithVideo.error) {
+    if (!fallbackSelectWithVideo.data) {
+      return null;
+    }
+    return {
+      ...fallbackSelectWithVideo.data,
+      image_public_id: null,
+      video_public_id: null,
+    };
+  }
+
+  if (fallbackSelectWithVideo.error.code !== "42703") {
     throw new HttpError(500, "Failed to fetch post", { expose: false });
   }
 
@@ -56,6 +81,8 @@ async function getPostForDeletion(
   return {
     ...fallbackSelect.data,
     image_public_id: null,
+    video_url: null,
+    video_public_id: null,
   };
 }
 
@@ -157,10 +184,20 @@ export async function handleDeletePost(ctx: AppContext): Promise<Response> {
     (post.image_url
       ? extractCloudinaryPublicId(post.image_url, ctx.config.cloudinaryCloudName)
       : null);
+  const videoPublicId =
+    post.video_public_id ??
+    (post.video_url
+      ? extractCloudinaryVideoPublicId(post.video_url, ctx.config.cloudinaryCloudName)
+      : null);
 
-  if (imagePublicId) {
+  if (imagePublicId || videoPublicId) {
     try {
-      await deleteCloudinaryImage(ctx.config, imagePublicId);
+      if (imagePublicId) {
+        await deleteCloudinaryImage(ctx.config, imagePublicId);
+      }
+      if (videoPublicId) {
+        await deleteCloudinaryVideo(ctx.config, videoPublicId);
+      }
     } catch {
       // Deleting DB data is prioritized; media cleanup is best-effort.
       logAsyncWarning(

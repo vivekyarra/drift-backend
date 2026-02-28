@@ -2,7 +2,9 @@ import { requireAdmin } from "../middleware/admin";
 import type { AppContext } from "../types";
 import {
   deleteCloudinaryImage,
+  deleteCloudinaryVideo,
   extractCloudinaryPublicId,
+  extractCloudinaryVideoPublicId,
 } from "../utils/cloudinary";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody, parsePositiveIntParam } from "../utils/http";
@@ -124,26 +126,77 @@ export async function handleAdminDeletePost(ctx: AppContext): Promise<Response> 
 
   const postLookup = await ctx.supabase
     .from("posts")
-    .select("id,image_url,image_public_id")
+    .select("id,image_url,image_public_id,video_url,video_public_id")
     .eq("id", postId)
     .maybeSingle();
 
-  if (postLookup.error) {
+  if (postLookup.error && postLookup.error.code !== "42703") {
     throw new HttpError(500, "Failed to fetch post", { expose: false });
   }
-  if (!postLookup.data) {
+
+  let postData = postLookup.data;
+  if (postLookup.error?.code === "42703") {
+    const fallbackLookupWithVideo = await ctx.supabase
+      .from("posts")
+      .select("id,image_url,video_url")
+      .eq("id", postId)
+      .maybeSingle();
+
+    if (!fallbackLookupWithVideo.error) {
+      postData = fallbackLookupWithVideo.data
+        ? {
+            ...fallbackLookupWithVideo.data,
+            image_public_id: null,
+            video_public_id: null,
+          }
+        : null;
+    } else if (fallbackLookupWithVideo.error.code === "42703") {
+      const fallbackLookup = await ctx.supabase
+        .from("posts")
+        .select("id,image_url")
+        .eq("id", postId)
+        .maybeSingle();
+
+      if (fallbackLookup.error) {
+        throw new HttpError(500, "Failed to fetch post", { expose: false });
+      }
+
+      postData = fallbackLookup.data
+        ? {
+            ...fallbackLookup.data,
+            image_public_id: null,
+            video_url: null,
+            video_public_id: null,
+          }
+        : null;
+    } else {
+      throw new HttpError(500, "Failed to fetch post", { expose: false });
+    }
+  }
+
+  if (!postData) {
     throw new HttpError(404, "Post not found");
   }
 
   const imagePublicId =
-    postLookup.data.image_public_id ??
-    (postLookup.data.image_url
-      ? extractCloudinaryPublicId(postLookup.data.image_url, ctx.config.cloudinaryCloudName)
+    postData.image_public_id ??
+    (postData.image_url
+      ? extractCloudinaryPublicId(postData.image_url, ctx.config.cloudinaryCloudName)
+      : null);
+  const videoPublicId =
+    postData.video_public_id ??
+    (postData.video_url
+      ? extractCloudinaryVideoPublicId(postData.video_url, ctx.config.cloudinaryCloudName)
       : null);
 
-  if (imagePublicId) {
+  if (imagePublicId || videoPublicId) {
     try {
-      await deleteCloudinaryImage(ctx.config, imagePublicId);
+      if (imagePublicId) {
+        await deleteCloudinaryImage(ctx.config, imagePublicId);
+      }
+      if (videoPublicId) {
+        await deleteCloudinaryVideo(ctx.config, videoPublicId);
+      }
     } catch {
       logAsyncWarning(
         ctx,
@@ -354,7 +407,7 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
   let query = ctx.supabase
     .from("users")
     .select(
-      "id,username,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
+      "id,username,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
     )
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -386,22 +439,37 @@ export async function handleAdminPosts(ctx: AppContext): Promise<Response> {
   const queryText = (url.searchParams.get("q") ?? "").trim();
   const includeHidden = url.searchParams.get("include_hidden") !== "false";
 
-  let query = ctx.supabase
-    .from("posts")
-    .select(
-      "id,user_id,channel,content,image_url,created_at,expires_at,hidden,report_count,deleted_at",
-    )
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const runPostsQuery = async (selectClause: string) => {
+    let query = ctx.supabase
+      .from("posts")
+      .select(selectClause)
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
-  if (!includeHidden) {
-    query = query.eq("hidden", false);
+    if (!includeHidden) {
+      query = query.eq("hidden", false);
+    }
+    if (queryText) {
+      query = query.ilike("content", `%${escapeLikePattern(queryText)}%`);
+    }
+
+    return query;
+  };
+
+  let { data, error } = await runPostsQuery(
+    "id,user_id,channel,content,image_url,video_url,created_at,expires_at,hidden,report_count,deleted_at",
+  );
+  if (error?.code === "42703") {
+    ({ data, error } = await runPostsQuery(
+      "id,user_id,channel,content,image_url,video_url,created_at,expires_at,hidden,report_count",
+    ));
   }
-  if (queryText) {
-    query = query.ilike("content", `%${escapeLikePattern(queryText)}%`);
+  if (error?.code === "42703") {
+    ({ data, error } = await runPostsQuery(
+      "id,user_id,channel,content,image_url,created_at,expires_at,hidden,report_count",
+    ));
   }
 
-  const { data, error } = await query;
   if (error) {
     throw new HttpError(500, "Failed to fetch posts", { expose: false });
   }

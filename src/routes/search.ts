@@ -63,7 +63,9 @@ export async function handleSearch(ctx: AppContext): Promise<Response> {
   const runPostQuery = async (withDeletedFilter: boolean) => {
     let postsQuery = ctx.supabase
       .from("posts")
-      .select("id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at")
+      .select(
+        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at",
+      )
       .eq("hidden", false)
       .gt("expires_at", nowIso)
       .order("created_at", { ascending: false })

@@ -116,8 +116,10 @@ export interface Database {
           channel: string;
           content: string;
           image_url: string | null;
+          video_url: string | null;
           image_blurhash: string | null;
           image_public_id: string | null;
+          video_public_id: string | null;
           created_at: string;
           expires_at: string;
           trust_weight: number;
@@ -131,8 +133,10 @@ export interface Database {
           channel: string;
           content: string;
           image_url?: string | null;
+          video_url?: string | null;
           image_blurhash?: string | null;
           image_public_id?: string | null;
+          video_public_id?: string | null;
           created_at?: string;
           expires_at: string;
           trust_weight?: number;
@@ -146,8 +150,10 @@ export interface Database {
           channel?: string;
           content?: string;
           image_url?: string | null;
+          video_url?: string | null;
           image_blurhash?: string | null;
           image_public_id?: string | null;
+          video_public_id?: string | null;
           created_at?: string;
           expires_at?: string;
           trust_weight?: number;

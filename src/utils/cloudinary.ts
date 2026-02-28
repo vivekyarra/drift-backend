@@ -45,9 +45,10 @@ export async function buildCloudinaryUploadSignature(
   return sha1Hex(payload);
 }
 
-export function extractCloudinaryPublicId(
+export function extractCloudinaryPublicIdForResource(
   imageUrl: string,
   cloudinaryCloudName: string,
+  resourceType: "image" | "video",
 ): string | null {
   try {
     const url = new URL(imageUrl);
@@ -68,7 +69,7 @@ export function extractCloudinaryPublicId(
       return null;
     }
 
-    if (segments[1].toLowerCase() !== "image") {
+    if (segments[1].toLowerCase() !== resourceType) {
       return null;
     }
 
@@ -101,9 +102,38 @@ export function extractCloudinaryPublicId(
   }
 }
 
+export function extractCloudinaryPublicId(
+  imageUrl: string,
+  cloudinaryCloudName: string,
+): string | null {
+  return extractCloudinaryPublicIdForResource(imageUrl, cloudinaryCloudName, "image");
+}
+
+export function extractCloudinaryVideoPublicId(
+  videoUrl: string,
+  cloudinaryCloudName: string,
+): string | null {
+  return extractCloudinaryPublicIdForResource(videoUrl, cloudinaryCloudName, "video");
+}
+
 export async function deleteCloudinaryImage(
   config: AppConfig,
   publicId: string,
+): Promise<void> {
+  return deleteCloudinaryAsset(config, publicId, "image");
+}
+
+export async function deleteCloudinaryVideo(
+  config: AppConfig,
+  publicId: string,
+): Promise<void> {
+  return deleteCloudinaryAsset(config, publicId, "video");
+}
+
+async function deleteCloudinaryAsset(
+  config: AppConfig,
+  publicId: string,
+  resourceType: "image" | "video",
 ): Promise<void> {
   if (!config.cloudinaryApiKey || !config.cloudinaryApiSecret) {
     throw new HttpError(500, "Cloudinary delete is not configured", {
@@ -121,8 +151,9 @@ export async function deleteCloudinaryImage(
   form.set("api_key", config.cloudinaryApiKey);
   form.set("signature", signature);
   form.set("invalidate", "true");
+  form.set("resource_type", resourceType);
 
-  const endpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudinaryCloudName)}/image/destroy`;
+  const endpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudinaryCloudName)}/${resourceType}/destroy`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -135,13 +166,13 @@ export async function deleteCloudinaryImage(
   try {
     payload = await response.json();
   } catch {
-    throw new HttpError(502, "Failed to delete Cloudinary image", {
+    throw new HttpError(502, "Failed to delete Cloudinary asset", {
       expose: false,
     });
   }
 
   if (!response.ok) {
-    throw new HttpError(502, "Failed to delete Cloudinary image", {
+    throw new HttpError(502, "Failed to delete Cloudinary asset", {
       expose: false,
     });
   }
@@ -155,7 +186,7 @@ export async function deleteCloudinaryImage(
       : "";
 
   if (result !== "ok" && result !== "not found") {
-    throw new HttpError(502, "Failed to delete Cloudinary image", {
+    throw new HttpError(502, "Failed to delete Cloudinary asset", {
       expose: false,
     });
   }

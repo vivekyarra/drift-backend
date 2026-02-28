@@ -84,7 +84,7 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
     let query = ctx.supabase
       .from("posts")
       .select(
-        "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,report_count",
+        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count",
         { count: "exact" },
       )
       .eq("user_id", requestedUserId)
@@ -126,6 +126,7 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
     channel: string;
     content: string;
     image_url: string | null;
+    video_url: string | null;
     image_blurhash: string | null;
     created_at: string;
     expires_at: string;
@@ -145,7 +146,9 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
       if (savedPostIds.length > 0) {
         const savedPostsResult = await ctx.supabase
           .from("posts")
-          .select("id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,report_count,hidden")
+          .select(
+            "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count,hidden",
+          )
           .in("id", savedPostIds)
           .eq("hidden", false)
           .gt("expires_at", new Date().toISOString())
@@ -159,6 +162,7 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
             channel: post.channel,
             content: post.content,
             image_url: post.image_url,
+            video_url: post.video_url,
             image_blurhash: post.image_blurhash,
             created_at: post.created_at,
             expires_at: post.expires_at,

@@ -128,9 +128,10 @@ function isLocalHostname(hostname: string): boolean {
   return lowered === "localhost" || lowered === "127.0.0.1" || lowered === "::1";
 }
 
-export function sanitizeImageUrl(
+function sanitizeCloudinaryAssetUrl(
   value: unknown,
   cloudinaryCloudName: string,
+  resourceType: "image" | "video",
 ): string | null {
   if (typeof value !== "string") {
     return null;
@@ -172,7 +173,7 @@ export function sanitizeImageUrl(
       return null;
     }
 
-    const requiredPrefix = `/${cloudinaryCloudName.toLowerCase()}/image/`;
+    const requiredPrefix = `/${cloudinaryCloudName.toLowerCase()}/${resourceType}/`;
     if (!url.pathname.toLowerCase().startsWith(requiredPrefix)) {
       return null;
     }
@@ -186,4 +187,18 @@ export function sanitizeImageUrl(
   } catch {
     return null;
   }
+}
+
+export function sanitizeImageUrl(
+  value: unknown,
+  cloudinaryCloudName: string,
+): string | null {
+  return sanitizeCloudinaryAssetUrl(value, cloudinaryCloudName, "image");
+}
+
+export function sanitizeVideoUrl(
+  value: unknown,
+  cloudinaryCloudName: string,
+): string | null {
+  return sanitizeCloudinaryAssetUrl(value, cloudinaryCloudName, "video");
 }
