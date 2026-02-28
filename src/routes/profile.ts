@@ -10,6 +10,19 @@ import {
   sanitizeUuid,
 } from "../utils/sanitize";
 
+interface ProfilePostRow {
+  id: string;
+  user_id: string;
+  channel: string;
+  content: string;
+  image_url: string | null;
+  video_url?: string | null;
+  image_blurhash: string | null;
+  created_at: string;
+  expires_at: string;
+  report_count: number;
+}
+
 interface UpdateProfileRequestBody {
   username?: unknown;
   bio?: unknown;
@@ -80,13 +93,17 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
   }
 
   const nowIso = new Date().toISOString();
-  const runPostsQuery = async (withDeletedFilter: boolean) => {
+  const runPostsQuery = async (
+    withDeletedFilter: boolean,
+    withVideoColumn: boolean,
+  ) => {
+    const selectClause = withVideoColumn
+      ? "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count"
+      : "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,report_count";
+
     let query = ctx.supabase
       .from("posts")
-      .select(
-        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count",
-        { count: "exact" },
-      )
+      .select(selectClause, { count: "exact" })
       .eq("user_id", requestedUserId)
       .eq("hidden", false)
       .gt("expires_at", nowIso)
@@ -100,14 +117,32 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
     return query;
   };
 
-  let { data: posts, error: postsError, count: postsCount } = await runPostsQuery(true);
+  let { data: posts, error: postsError, count: postsCount } = await runPostsQuery(true, true);
   if (postsError?.code === "42703") {
-    ({ data: posts, error: postsError, count: postsCount } = await runPostsQuery(false));
+    ({ data: posts, error: postsError, count: postsCount } = await runPostsQuery(false, true));
+  }
+  if (postsError?.code === "42703") {
+    ({ data: posts, error: postsError, count: postsCount } = await runPostsQuery(true, false));
+  }
+  if (postsError?.code === "42703") {
+    ({ data: posts, error: postsError, count: postsCount } = await runPostsQuery(false, false));
   }
 
   if (postsError) {
     throw new HttpError(500, "Failed to fetch profile posts", { expose: false });
   }
+  const normalizedPosts = ((posts ?? []) as unknown as ProfilePostRow[]).map((post) => ({
+    id: post.id,
+    user_id: post.user_id,
+    channel: post.channel,
+    content: post.content,
+    image_url: post.image_url,
+    video_url: post.video_url ?? null,
+    image_blurhash: post.image_blurhash,
+    created_at: post.created_at,
+    expires_at: post.expires_at,
+    report_count: post.report_count,
+  }));
 
   const { data: followBackData, error: followBackError } = await ctx.supabase
     .from("follows")
@@ -144,25 +179,35 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
     if (!savedResult.error) {
       const savedPostIds = [...new Set((savedResult.data ?? []).map((row) => row.post_id))];
       if (savedPostIds.length > 0) {
-        const savedPostsResult = await ctx.supabase
-          .from("posts")
-          .select(
-            "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count,hidden",
-          )
-          .in("id", savedPostIds)
-          .eq("hidden", false)
-          .gt("expires_at", new Date().toISOString())
-          .order("created_at", { ascending: false })
-          .limit(100);
+        const runSavedPostsQuery = async (withVideoColumn: boolean) => {
+          const selectClause = withVideoColumn
+            ? "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,report_count,hidden"
+            : "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,report_count,hidden";
+
+          return ctx.supabase
+            .from("posts")
+            .select(selectClause)
+            .in("id", savedPostIds)
+            .eq("hidden", false)
+            .gt("expires_at", new Date().toISOString())
+            .order("created_at", { ascending: false })
+            .limit(100);
+        };
+
+        let savedPostsResult = await runSavedPostsQuery(true);
+        if (savedPostsResult.error?.code === "42703") {
+          savedPostsResult = await runSavedPostsQuery(false);
+        }
 
         if (!savedPostsResult.error) {
-          savedPosts = (savedPostsResult.data ?? []).map((post) => ({
+          const savedRows = (savedPostsResult.data ?? []) as unknown as ProfilePostRow[];
+          savedPosts = savedRows.map((post) => ({
             id: post.id,
             user_id: post.user_id,
             channel: post.channel,
             content: post.content,
             image_url: post.image_url,
-            video_url: post.video_url,
+            video_url: post.video_url ?? null,
             image_blurhash: post.image_blurhash,
             created_at: post.created_at,
             expires_at: post.expires_at,
@@ -199,7 +244,7 @@ export async function handleProfile(ctx: AppContext): Promise<Response> {
       is_following: Boolean(followBackData),
       is_self: isSelf,
     },
-    posts: posts ?? [],
+    posts: normalizedPosts,
     saved_posts: savedPosts,
   });
 }

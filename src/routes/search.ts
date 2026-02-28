@@ -3,6 +3,18 @@ import type { AppContext } from "../types";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parsePositiveIntParam } from "../utils/http";
 
+interface SearchPostRow {
+  id: string;
+  user_id: string;
+  channel: string;
+  content: string;
+  image_url: string | null;
+  video_url?: string | null;
+  image_blurhash: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
 function sanitizeSearchQuery(value: string | null): string {
   if (!value) {
     return "";
@@ -60,12 +72,14 @@ export async function handleSearch(ctx: AppContext): Promise<Response> {
     throw new HttpError(500, "Failed to search users", { expose: false });
   }
 
-  const runPostQuery = async (withDeletedFilter: boolean) => {
+  const runPostQuery = async (withDeletedFilter: boolean, withVideoColumn: boolean) => {
+    const selectClause = withVideoColumn
+      ? "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at"
+      : "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at";
+
     let postsQuery = ctx.supabase
       .from("posts")
-      .select(
-        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at",
-      )
+      .select(selectClause)
       .eq("hidden", false)
       .gt("expires_at", nowIso)
       .order("created_at", { ascending: false })
@@ -82,16 +96,22 @@ export async function handleSearch(ctx: AppContext): Promise<Response> {
     return postsQuery;
   };
 
-  let { data: posts, error: postsError } = await runPostQuery(true);
+  let { data: posts, error: postsError } = await runPostQuery(true, true);
   if (postsError?.code === "42703") {
-    ({ data: posts, error: postsError } = await runPostQuery(false));
+    ({ data: posts, error: postsError } = await runPostQuery(false, true));
+  }
+  if (postsError?.code === "42703") {
+    ({ data: posts, error: postsError } = await runPostQuery(true, false));
+  }
+  if (postsError?.code === "42703") {
+    ({ data: posts, error: postsError } = await runPostQuery(false, false));
   }
 
   if (postsError) {
     throw new HttpError(500, "Failed to search posts", { expose: false });
   }
 
-  const safePosts = posts ?? [];
+  const safePosts = (posts ?? []) as unknown as SearchPostRow[];
   const safeUsers = usersResult.data ?? [];
 
   const userIds = [...new Set(safePosts.map((post) => post.user_id))];
@@ -142,10 +162,20 @@ export async function handleSearch(ctx: AppContext): Promise<Response> {
         created_at: user.created_at,
         is_following: followingIds.has(user.id),
       })),
-    posts: safePosts.map((post) => ({
-      ...post,
-      username: userMap.get(post.user_id) ?? "unknown",
-      is_from_following: followingIds.has(post.user_id),
-    })).filter((post) => post.username !== "unknown"),
+    posts: safePosts
+      .map((post) => ({
+        id: post.id,
+        user_id: post.user_id,
+        channel: post.channel,
+        content: post.content,
+        image_url: post.image_url,
+        video_url: post.video_url ?? null,
+        image_blurhash: post.image_blurhash,
+        created_at: post.created_at,
+        expires_at: post.expires_at,
+        username: userMap.get(post.user_id) ?? "unknown",
+        is_from_following: followingIds.has(post.user_id),
+      }))
+      .filter((post) => post.username !== "unknown"),
   });
 }

@@ -120,7 +120,7 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
   }
 
   const expiresAt = new Date(Date.now() + FIFTEEN_DAYS_MS).toISOString();
-  const primaryInsert = await ctx.supabase
+  const fullInsert = await ctx.supabase
     .from("posts")
     .insert({
       user_id: ctx.session!.userId,
@@ -139,12 +139,12 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
     )
     .single();
 
-  if (!primaryInsert.error) {
-    return jsonResponse({ post: primaryInsert.data }, 201);
+  if (!fullInsert.error) {
+    return jsonResponse({ post: fullInsert.data }, 201);
   }
 
-  if (primaryInsert.error.code === "42703") {
-    const fallbackInsert = await ctx.supabase
+  if (fullInsert.error.code === "42703") {
+    const fallbackNoPublicId = await ctx.supabase
       .from("posts")
       .insert({
         user_id: ctx.session!.userId,
@@ -161,13 +161,36 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
       )
       .single();
 
-    if (!fallbackInsert.error) {
-      return jsonResponse({ post: fallbackInsert.data }, 201);
+    if (!fallbackNoPublicId.error) {
+      return jsonResponse({ post: fallbackNoPublicId.data }, 201);
+    }
+
+    if (fallbackNoPublicId.error.code === "42703") {
+      if (videoUrl) {
+        throw new HttpError(503, "Video posting is unavailable until latest migration is applied");
+      }
+
+      const legacyFallback = await ctx.supabase
+        .from("posts")
+        .insert({
+          user_id: ctx.session!.userId,
+          channel,
+          content,
+          image_url: imageUrl,
+          image_blurhash: imageBlurhash,
+          expires_at: expiresAt,
+          hidden: ctx.session!.isShadowBanned,
+        })
+        .select(
+          "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,trust_weight,report_count",
+        )
+        .single();
+
+      if (!legacyFallback.error) {
+        return jsonResponse({ post: legacyFallback.data }, 201);
+      }
     }
   }
 
-  if (primaryInsert.error) {
-    throw new HttpError(500, "Failed to create post", { expose: false });
-  }
   throw new HttpError(500, "Failed to create post", { expose: false });
 }

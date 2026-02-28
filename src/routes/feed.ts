@@ -8,6 +8,18 @@ import {
 } from "../utils/http";
 import { fetchPostEngagement } from "../utils/postEngagement";
 
+interface FeedPostRow {
+  id: string;
+  user_id: string;
+  channel: string;
+  content: string;
+  image_url: string | null;
+  video_url?: string | null;
+  image_blurhash: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
 export async function handleFeed(ctx: AppContext): Promise<Response> {
   const requestUrl = new URL(ctx.request.url);
   const followingOnly = requestUrl.searchParams.get("following_only") === "true";
@@ -59,12 +71,17 @@ export async function handleFeed(ctx: AppContext): Promise<Response> {
   }
 
   const nowIso = new Date().toISOString();
-  const runFeedQuery = async (withDeletedFilter: boolean) => {
+  const runFeedQuery = async (
+    withDeletedFilter: boolean,
+    withVideoColumn: boolean,
+  ) => {
+    const selectClause = withVideoColumn
+      ? "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at"
+      : "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at";
+
     let query = ctx.supabase
       .from("posts")
-      .select(
-        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at",
-      )
+      .select(selectClause)
       .eq("hidden", false)
       .gt("expires_at", nowIso)
       .order("created_at", { ascending: false })
@@ -85,17 +102,23 @@ export async function handleFeed(ctx: AppContext): Promise<Response> {
     return query;
   };
 
-  let { data: posts, error } = await runFeedQuery(true);
+  let { data: posts, error } = await runFeedQuery(true, true);
   if (error?.code === "42703") {
-    // Backward-compatible fallback when deleted_at is not migrated yet.
-    ({ data: posts, error } = await runFeedQuery(false));
+    ({ data: posts, error } = await runFeedQuery(false, true));
+  }
+  if (error?.code === "42703") {
+    ({ data: posts, error } = await runFeedQuery(true, false));
+  }
+  if (error?.code === "42703") {
+    // Backward-compatible fallback when both deleted_at and video_url are not migrated yet.
+    ({ data: posts, error } = await runFeedQuery(false, false));
   }
 
   if (error) {
     throw new HttpError(500, "Failed to fetch feed", { expose: false });
   }
 
-  const safePosts = posts ?? [];
+  const safePosts = (posts ?? []) as unknown as FeedPostRow[];
   const postAuthorIds = [...new Set(safePosts.map((post) => post.user_id))];
   let userMap = new Map<
     string,
@@ -150,7 +173,15 @@ export async function handleFeed(ctx: AppContext): Promise<Response> {
       return !author?.isShadowBanned;
     })
     .map((post) => ({
-      ...post,
+      id: post.id,
+      user_id: post.user_id,
+      channel: post.channel,
+      content: post.content,
+      image_url: post.image_url,
+      video_url: post.video_url ?? null,
+      image_blurhash: post.image_blurhash,
+      created_at: post.created_at,
+      expires_at: post.expires_at,
       username: userMap.get(post.user_id)?.username ?? "unknown",
     }));
 

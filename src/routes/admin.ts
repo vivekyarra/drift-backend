@@ -473,9 +473,34 @@ export async function handleAdminPosts(ctx: AppContext): Promise<Response> {
   if (error) {
     throw new HttpError(500, "Failed to fetch posts", { expose: false });
   }
+  const postRows = (data ?? []) as unknown as Array<{
+    id: string;
+    user_id: string;
+    channel: string;
+    content: string;
+    image_url: string | null;
+    video_url?: string | null;
+    created_at: string;
+    expires_at: string;
+    hidden: boolean;
+    report_count: number;
+    deleted_at?: string | null;
+  }>;
 
   return jsonResponse({
-    posts: data ?? [],
+    posts: postRows.map((post) => ({
+      id: post.id,
+      user_id: post.user_id,
+      channel: post.channel,
+      content: post.content,
+      image_url: post.image_url,
+      video_url: post.video_url ?? null,
+      created_at: post.created_at,
+      expires_at: post.expires_at,
+      hidden: post.hidden,
+      report_count: post.report_count,
+      deleted_at: post.deleted_at ?? null,
+    })),
   });
 }
 

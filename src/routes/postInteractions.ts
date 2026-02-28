@@ -7,6 +7,19 @@ import { createNotification } from "../utils/notifications";
 import { fetchPostEngagement } from "../utils/postEngagement";
 import { sanitizeContent, sanitizeEmoji, sanitizeUuid } from "../utils/sanitize";
 
+interface PostDetailRow {
+  id: string;
+  user_id: string;
+  channel: string;
+  content: string;
+  image_url: string | null;
+  video_url?: string | null;
+  image_blurhash: string | null;
+  created_at: string;
+  expires_at: string;
+  hidden: boolean;
+}
+
 interface ReactionBody {
   reaction?: unknown;
   emoji?: unknown;
@@ -58,12 +71,14 @@ export async function handleGetPostById(
     throw new HttpError(400, "Invalid post id");
   }
 
-  const runQuery = async (withDeletedFilter: boolean) => {
+  const runQuery = async (withDeletedFilter: boolean, withVideoColumn: boolean) => {
+    const selectClause = withVideoColumn
+      ? "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,hidden"
+      : "id,user_id,channel,content,image_url,image_blurhash,created_at,expires_at,hidden";
+
     const baseQuery = ctx.supabase
       .from("posts")
-      .select(
-        "id,user_id,channel,content,image_url,video_url,image_blurhash,created_at,expires_at,hidden",
-      )
+      .select(selectClause)
       .eq("id", postId)
       .eq("hidden", false)
       .gt("expires_at", new Date().toISOString());
@@ -75,9 +90,15 @@ export async function handleGetPostById(
     return query.maybeSingle();
   };
 
-  let { data: post, error } = await runQuery(true);
+  let { data: post, error } = await runQuery(true, true);
   if (error?.code === "42703") {
-    ({ data: post, error } = await runQuery(false));
+    ({ data: post, error } = await runQuery(false, true));
+  }
+  if (error?.code === "42703") {
+    ({ data: post, error } = await runQuery(true, false));
+  }
+  if (error?.code === "42703") {
+    ({ data: post, error } = await runQuery(false, false));
   }
   if (error) {
     throw new HttpError(500, "Failed to load post", { expose: false });
@@ -85,20 +106,30 @@ export async function handleGetPostById(
   if (!post) {
     throw new HttpError(404, "Post not found");
   }
+  const safePost = post as unknown as PostDetailRow;
 
   const [authorResult, engagementMap] = await Promise.all([
-    ctx.supabase.from("users").select("id,username").eq("id", post.user_id).maybeSingle(),
-    fetchPostEngagement(ctx, [post.id], ctx.session!.userId),
+    ctx.supabase.from("users").select("id,username").eq("id", safePost.user_id).maybeSingle(),
+    fetchPostEngagement(ctx, [safePost.id], ctx.session!.userId),
   ]);
 
   if (authorResult.error) {
     throw new HttpError(500, "Failed to load post author", { expose: false });
   }
 
-  const engagement = engagementMap.get(post.id);
+  const engagement = engagementMap.get(safePost.id);
   return jsonResponse({
     post: {
-      ...post,
+      id: safePost.id,
+      user_id: safePost.user_id,
+      channel: safePost.channel,
+      content: safePost.content,
+      image_url: safePost.image_url,
+      video_url: safePost.video_url ?? null,
+      image_blurhash: safePost.image_blurhash,
+      created_at: safePost.created_at,
+      expires_at: safePost.expires_at,
+      hidden: safePost.hidden,
       username: authorResult.data?.username ?? "unknown",
       engagement: engagement ?? null,
     },
