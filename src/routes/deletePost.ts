@@ -18,7 +18,6 @@ interface PostDeleteRecord {
   user_id: string;
   image_url: string | null;
   image_public_id: string | null;
-  deleted_at: string | null;
 }
 
 async function getPostForDeletion(
@@ -27,7 +26,7 @@ async function getPostForDeletion(
 ): Promise<PostDeleteRecord | null> {
   const primarySelect = await ctx.supabase
     .from("posts")
-    .select("id,user_id,image_url,image_public_id,deleted_at")
+    .select("id,user_id,image_url,image_public_id")
     .eq("id", postId)
     .maybeSingle();
 
@@ -56,60 +55,39 @@ async function getPostForDeletion(
   return {
     ...fallbackSelect.data,
     image_public_id: null,
-    deleted_at: null,
   };
 }
 
-async function softDeletePost(ctx: AppContext, postId: string): Promise<void> {
-  const deletedAt = new Date().toISOString();
-  const primaryUpdate = await ctx.supabase
+async function hardDeletePost(
+  ctx: AppContext,
+  postId: string,
+  ownerUserId: string,
+): Promise<void> {
+  const deletion = await ctx.supabase
     .from("posts")
-    .update({
-      hidden: true,
-      deleted_at: deletedAt,
-      content: "[deleted]",
-      image_url: null,
-      image_blurhash: null,
-      image_public_id: null,
-    })
-    .eq("id", postId);
+    .delete()
+    .eq("id", postId)
+    .eq("user_id", ownerUserId)
+    .select("id")
+    .maybeSingle();
 
-  if (!primaryUpdate.error) {
-    return;
-  }
-
-  if (primaryUpdate.error.code !== "42703") {
+  if (deletion.error) {
     throw new HttpError(500, "Failed to delete post", { expose: false });
   }
 
-  const fallbackUpdate = await ctx.supabase
-    .from("posts")
-    .update({
-      hidden: true,
-      content: "[deleted]",
-      image_url: null,
-      image_blurhash: null,
-    })
-    .eq("id", postId);
-
-  if (!fallbackUpdate.error) {
-    return;
+  if (!deletion.data) {
+    throw new HttpError(404, "Post not found");
   }
 
-  if (fallbackUpdate.error.code !== "42703") {
-    throw new HttpError(500, "Failed to delete post", { expose: false });
-  }
+  // Best-effort cleanup for tables that may not have FK constraints.
+  const reportsCleanup = await ctx.supabase
+    .from("reports")
+    .delete()
+    .eq("content_type", "post")
+    .eq("content_id", postId);
 
-  const minimalFallback = await ctx.supabase
-    .from("posts")
-    .update({
-      hidden: true,
-      content: "[deleted]",
-    })
-    .eq("id", postId);
-
-  if (minimalFallback.error) {
-    throw new HttpError(500, "Failed to delete post", { expose: false });
+  if (reportsCleanup.error && reportsCleanup.error.code !== "42P01") {
+    throw new HttpError(500, "Failed to finalize post deletion", { expose: false });
   }
 }
 
@@ -139,10 +117,6 @@ export async function handleDeletePost(ctx: AppContext): Promise<Response> {
     throw new HttpError(403, "Forbidden");
   }
 
-  if (post.deleted_at) {
-    return jsonResponse({ success: true, already_deleted: true });
-  }
-
   const imagePublicId =
     post.image_public_id ??
     (post.image_url
@@ -153,7 +127,7 @@ export async function handleDeletePost(ctx: AppContext): Promise<Response> {
     await deleteCloudinaryImage(ctx.config, imagePublicId);
   }
 
-  await softDeletePost(ctx, postId);
+  await hardDeletePost(ctx, postId, ctx.session!.userId);
 
   return jsonResponse({ success: true });
 }
