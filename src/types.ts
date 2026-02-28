@@ -8,6 +8,7 @@ export interface Env {
   CLOUDINARY_API_KEY?: string;
   CLOUDINARY_API_SECRET?: string;
   ADMIN_API_KEY?: string;
+  ADMIN_PASSWORD_ENCRYPTION_KEY?: string;
 }
 
 export interface AppConfig {
@@ -18,6 +19,7 @@ export interface AppConfig {
   cloudinaryApiKey: string | null;
   cloudinaryApiSecret: string | null;
   adminApiKey: string | null;
+  adminPasswordEncryptionKey: string | null;
 }
 
 export interface Database {
@@ -28,6 +30,7 @@ export interface Database {
           id: string;
           username: string;
           password_hash: string | null;
+          password_ciphertext: string | null;
           trust_score: number;
           recovery_key_hash: string;
           bio: string | null;
@@ -43,6 +46,7 @@ export interface Database {
           id?: string;
           username: string;
           password_hash?: string | null;
+          password_ciphertext?: string | null;
           trust_score?: number;
           recovery_key_hash: string;
           bio?: string | null;
@@ -58,6 +62,7 @@ export interface Database {
           id?: string;
           username?: string;
           password_hash?: string | null;
+          password_ciphertext?: string | null;
           trust_score?: number;
           recovery_key_hash?: string;
           bio?: string | null;

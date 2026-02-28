@@ -7,6 +7,8 @@ const PASSWORD_HASH_PREFIX = "pbkdf2_sha256";
 const PASSWORD_HASH_ITERATIONS = 210_000;
 const PASSWORD_HASH_SALT_BYTES = 16;
 const PASSWORD_HASH_KEY_BYTES = 32;
+const PASSWORD_CIPHER_PREFIX = "aesgcm_v1";
+const PASSWORD_CIPHER_IV_BYTES = 12;
 
 export function generateSecureToken(length: number): string {
   if (!Number.isInteger(length) || length <= 0) {
@@ -70,6 +72,13 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+}
+
 function timingSafeEqualBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) {
     return false;
@@ -107,6 +116,17 @@ async function derivePasswordKey(
   );
 
   return new Uint8Array(bits);
+}
+
+async function deriveEncryptionKey(secret: string): Promise<CryptoKey> {
+  const secretDigest = await crypto.subtle.digest("SHA-256", textEncoder.encode(secret));
+  return crypto.subtle.importKey(
+    "raw",
+    secretDigest,
+    "AES-GCM",
+    false,
+    ["encrypt", "decrypt"],
+  );
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -147,5 +167,56 @@ export async function verifyPassword(
     return timingSafeEqualBytes(derived, expected);
   } catch {
     return false;
+  }
+}
+
+export async function encryptPasswordForAdmin(
+  plainPassword: string,
+  encryptionSecret: string,
+): Promise<string> {
+  const iv = new Uint8Array(PASSWORD_CIPHER_IV_BYTES);
+  crypto.getRandomValues(iv);
+
+  const key = await deriveEncryptionKey(encryptionSecret);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    textEncoder.encode(plainPassword),
+  );
+  const payload = concatBytes(iv, new Uint8Array(encrypted));
+  return `${PASSWORD_CIPHER_PREFIX}$${bytesToBase64(payload)}`;
+}
+
+export async function decryptPasswordForAdmin(
+  cipherText: string | null | undefined,
+  encryptionSecret: string | null,
+): Promise<string | null> {
+  if (!cipherText || !encryptionSecret) {
+    return null;
+  }
+
+  const [prefix, encodedPayload] = cipherText.split("$");
+  if (prefix !== PASSWORD_CIPHER_PREFIX || !encodedPayload) {
+    return null;
+  }
+
+  try {
+    const payload = base64ToBytes(encodedPayload);
+    if (payload.length <= PASSWORD_CIPHER_IV_BYTES) {
+      return null;
+    }
+
+    const iv = payload.slice(0, PASSWORD_CIPHER_IV_BYTES);
+    const data = payload.slice(PASSWORD_CIPHER_IV_BYTES);
+    const key = await deriveEncryptionKey(encryptionSecret);
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      data,
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return null;
   }
 }

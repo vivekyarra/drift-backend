@@ -11,7 +11,8 @@ export function getConfig(env: Env): AppConfig {
   const rawCloudinaryApiKey = env.CLOUDINARY_API_KEY?.trim();
   const rawCloudinaryApiSecret = env.CLOUDINARY_API_SECRET?.trim();
   const rawAdminApiKey = env.ADMIN_API_KEY?.trim();
-  const rawKey = `${rawUrl ?? ""}|${rawServiceKey ?? ""}|${rawFrontendOrigin ?? ""}|${rawCloudinaryCloudName ?? ""}|${rawCloudinaryApiKey ?? ""}|${rawCloudinaryApiSecret ?? ""}|${rawAdminApiKey ?? ""}`;
+  const rawAdminPasswordEncryptionKey = env.ADMIN_PASSWORD_ENCRYPTION_KEY?.trim();
+  const rawKey = `${rawUrl ?? ""}|${rawServiceKey ?? ""}|${rawFrontendOrigin ?? ""}|${rawCloudinaryCloudName ?? ""}|${rawCloudinaryApiKey ?? ""}|${rawCloudinaryApiSecret ?? ""}|${rawAdminApiKey ?? ""}|${rawAdminPasswordEncryptionKey ?? ""}`;
 
   if (cachedConfig && rawKey === cachedRawKey) {
     return cachedConfig;
@@ -53,6 +54,7 @@ export function getConfig(env: Env): AppConfig {
     cloudinaryApiKey: rawCloudinaryApiKey ?? null,
     cloudinaryApiSecret: rawCloudinaryApiSecret ?? null,
     adminApiKey: rawAdminApiKey ?? null,
+    adminPasswordEncryptionKey: rawAdminPasswordEncryptionKey ?? null,
   };
   cachedRawKey = rawKey;
 

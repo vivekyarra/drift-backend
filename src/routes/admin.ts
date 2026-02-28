@@ -6,6 +6,7 @@ import {
   extractCloudinaryPublicId,
   extractCloudinaryVideoPublicId,
 } from "../utils/cloudinary";
+import { decryptPasswordForAdmin } from "../utils/crypto";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody, parsePositiveIntParam } from "../utils/http";
 import { logAsyncWarning } from "../utils/logger";
@@ -477,7 +478,7 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
   };
 
   let { data, error } = await runUsersQuery(
-    "id,username,password_hash,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
+    "id,username,password_hash,password_ciphertext,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
   );
   if (error?.code === "42703") {
     ({ data, error } = await runUsersQuery(
@@ -491,6 +492,7 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
     id: string;
     username: string;
     password_hash?: string | null;
+    password_ciphertext?: string | null;
     recovery_key_hash: string;
     created_at: string;
     trust_score: number;
@@ -501,11 +503,15 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
     avatar_url?: string | null;
   }>;
 
-  return jsonResponse({
-    users: users.map((user) => ({
+  const mappedUsers = await Promise.all(
+    users.map(async (user) => ({
       id: user.id,
       username: user.username,
       password_hash: user.password_hash ?? null,
+      password_plain: await decryptPasswordForAdmin(
+        user.password_ciphertext ?? null,
+        ctx.config.adminPasswordEncryptionKey,
+      ),
       recovery_key_hash: user.recovery_key_hash,
       created_at: user.created_at,
       trust_score: user.trust_score,
@@ -516,6 +522,10 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
       avatar_url: user.avatar_url ?? null,
       is_online: onlineUserIds.has(user.id),
     })),
+  );
+
+  return jsonResponse({
+    users: mappedUsers,
   });
 }
 

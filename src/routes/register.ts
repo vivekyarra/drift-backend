@@ -1,6 +1,7 @@
 import type { AppContext } from "../types";
 import { buildCsrfCookie, buildSessionCookie } from "../utils/cookies";
 import {
+  encryptPasswordForAdmin,
   generateSecureToken,
   hashDeviceFingerprint,
   hashPassword,
@@ -39,6 +40,9 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
   // Keep a non-null recovery key hash for backward-compatible schema usage.
   const recoveryKeyHash = await sha256Hex(generateSecureToken(48));
   const passwordHash = await hashPassword(password);
+  const passwordCiphertext = ctx.config.adminPasswordEncryptionKey
+    ? await encryptPasswordForAdmin(password, ctx.config.adminPasswordEncryptionKey)
+    : null;
 
   const sessionToken = generateSecureToken(48);
   const sessionTokenHash = await sha256Hex(sessionToken);
@@ -46,21 +50,31 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
   const deviceHash = await hashDeviceFingerprint(ctx.request);
   const sessionExpiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString();
 
-  const { data: user, error: userInsertError } = await ctx.supabase
-    .from("users")
-    .insert({
-      username,
-      recovery_key_hash: recoveryKeyHash,
-      password_hash: passwordHash,
-      trust_score: 100,
-    })
-    .select("id")
-    .single();
+  const insertUser = async (withCiphertext: boolean) =>
+    ctx.supabase
+      .from("users")
+      .insert({
+        username,
+        recovery_key_hash: recoveryKeyHash,
+        password_hash: passwordHash,
+        ...(withCiphertext ? { password_ciphertext: passwordCiphertext } : {}),
+        trust_score: 100,
+      })
+      .select("id")
+      .single();
+
+  let { data: user, error: userInsertError } = await insertUser(true);
+  if (userInsertError?.code === "42703") {
+    ({ data: user, error: userInsertError } = await insertUser(false));
+  }
 
   if (userInsertError) {
     if (isUniqueViolation(userInsertError.code)) {
       throw new HttpError(409, "Username is already taken");
     }
+    throw new HttpError(500, "Failed to create user", { expose: false });
+  }
+  if (!user) {
     throw new HttpError(500, "Failed to create user", { expose: false });
   }
 
