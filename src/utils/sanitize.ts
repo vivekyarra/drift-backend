@@ -75,6 +75,27 @@ export function sanitizeContent(value: unknown, maxLength = 500): string | null 
   return sanitized;
 }
 
+export function sanitizePassword(
+  value: unknown,
+  minLength = 8,
+  maxLength = 128,
+): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.normalize("NFKC");
+  if (normalized.length < minLength || normalized.length > maxLength) {
+    return null;
+  }
+
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
 export function sanitizeBio(value: unknown, maxLength = 200): string | null {
   if (value === undefined || value === null) {
     return null;

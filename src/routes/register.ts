@@ -3,14 +3,16 @@ import { buildCsrfCookie, buildSessionCookie } from "../utils/cookies";
 import {
   generateSecureToken,
   hashDeviceFingerprint,
+  hashPassword,
   sha256Hex,
 } from "../utils/crypto";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
-import { sanitizeUsername } from "../utils/sanitize";
+import { sanitizePassword, sanitizeUsername } from "../utils/sanitize";
 
 interface RegisterRequestBody {
   username?: unknown;
+  password?: unknown;
 }
 
 const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -22,6 +24,7 @@ function isUniqueViolation(errorCode: string | undefined): boolean {
 export async function handleRegister(ctx: AppContext): Promise<Response> {
   const body = await parseJsonBody<RegisterRequestBody>(ctx.request);
   const username = sanitizeUsername(body.username);
+  const password = sanitizePassword(body.password);
 
   if (!username) {
     throw new HttpError(
@@ -29,9 +32,13 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
       "Username must be 3-20 characters (letters, numbers, underscore only)",
     );
   }
+  if (!password) {
+    throw new HttpError(400, "Password must be 8-128 characters");
+  }
 
-  const recoveryKey = generateSecureToken(32);
-  const recoveryKeyHash = await sha256Hex(recoveryKey);
+  // Keep a non-null recovery key hash for backward-compatible schema usage.
+  const recoveryKeyHash = await sha256Hex(generateSecureToken(48));
+  const passwordHash = await hashPassword(password);
 
   const sessionToken = generateSecureToken(48);
   const sessionTokenHash = await sha256Hex(sessionToken);
@@ -44,6 +51,7 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
     .insert({
       username,
       recovery_key_hash: recoveryKeyHash,
+      password_hash: passwordHash,
       trust_score: 100,
     })
     .select("id")
@@ -110,7 +118,7 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
 
   return jsonResponse(
     {
-      recovery_key: recoveryKey,
+      success: true,
       session_token: sessionToken,
     },
     201,

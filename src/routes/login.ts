@@ -4,45 +4,35 @@ import {
   generateSecureToken,
   hashDeviceFingerprint,
   sha256Hex,
+  verifyPassword,
 } from "../utils/crypto";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
+import { sanitizePassword, sanitizeUsername } from "../utils/sanitize";
 
 interface LoginRequestBody {
-  recovery_key?: unknown;
+  username?: unknown;
+  password?: unknown;
 }
 
 interface LoginUserRecord {
   id: string;
   username?: string | null;
-  recovery_key_hash: string | null;
+  password_hash: string | null;
   is_active?: boolean;
   is_banned?: boolean;
 }
 
 const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-function timingSafeEqual(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  let diff = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-  }
-
-  return diff === 0;
-}
-
-async function fetchUserByRecoveryKeyHash(
+async function fetchUserByUsername(
   ctx: AppContext,
-  recoveryKeyHash: string,
+  username: string,
 ): Promise<LoginUserRecord | null> {
   const primary = await ctx.supabase
     .from("users")
-    .select("id,username,recovery_key_hash,is_active,is_banned")
-    .eq("recovery_key_hash", recoveryKeyHash)
+    .select("id,username,password_hash,is_active,is_banned")
+    .eq("username", username)
     .maybeSingle();
 
   if (!primary.error) {
@@ -52,8 +42,8 @@ async function fetchUserByRecoveryKeyHash(
   if (primary.error.code === "42703") {
     const fallback = await ctx.supabase
       .from("users")
-      .select("id,username,recovery_key_hash")
-      .eq("recovery_key_hash", recoveryKeyHash)
+      .select("id,username,password_hash")
+      .eq("username", username)
       .maybeSingle();
 
     if (fallback.error) {
@@ -85,7 +75,6 @@ async function createSession(
     return;
   }
 
-  // Fallback if schema differs
   if (insert.error.code !== "42703") {
     throw new HttpError(500, "Failed to create session", { expose: false });
   }
@@ -116,17 +105,15 @@ async function createSession(
 
 export async function handleLogin(ctx: AppContext): Promise<Response> {
   const body = await parseJsonBody<LoginRequestBody>(ctx.request);
-  const recoveryKey =
-    typeof body.recovery_key === "string" ? body.recovery_key.trim() : null;
+  const username = sanitizeUsername(body.username);
+  const password = sanitizePassword(body.password);
 
-  if (!recoveryKey) {
-    throw new HttpError(400, "Recovery key is required");
+  if (!username || !password) {
+    throw new HttpError(400, "Username and password are required");
   }
 
-  const incomingHash = await sha256Hex(recoveryKey);
-  const user = await fetchUserByRecoveryKeyHash(ctx, incomingHash);
-
-  if (!user || !user.recovery_key_hash) {
+  const user = await fetchUserByUsername(ctx, username);
+  if (!user || !user.password_hash) {
     throw new HttpError(401, "Invalid credentials");
   }
 
@@ -138,7 +125,8 @@ export async function handleLogin(ctx: AppContext): Promise<Response> {
     throw new HttpError(403, "Account banned");
   }
 
-  if (!timingSafeEqual(incomingHash, user.recovery_key_hash)) {
+  const isValidPassword = await verifyPassword(password, user.password_hash);
+  if (!isValidPassword) {
     throw new HttpError(401, "Invalid credentials");
   }
 
@@ -146,9 +134,7 @@ export async function handleLogin(ctx: AppContext): Promise<Response> {
   const sessionTokenHash = await sha256Hex(sessionToken);
   const csrfToken = generateSecureToken(32);
   const deviceHash = await hashDeviceFingerprint(ctx.request);
-  const sessionExpiresAt = new Date(
-    Date.now() + SESSION_MAX_AGE_MS,
-  ).toISOString();
+  const sessionExpiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString();
 
   await createSession(
     ctx,

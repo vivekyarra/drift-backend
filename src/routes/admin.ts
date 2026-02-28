@@ -30,6 +30,8 @@ interface AdminDeleteUserRequestBody {
   user_id?: unknown;
 }
 
+type AdminUserFilter = "all" | "active" | "banned" | "online";
+
 const ONLINE_WINDOW_MS = 15 * 60 * 1000;
 
 function asBoolean(value: unknown): boolean | null {
@@ -45,6 +47,48 @@ function asCount(value: number | null): number {
 
 function escapeLikePattern(input: string): string {
   return input.replace(/[\\%_]/g, "\\$&");
+}
+
+function parseAdminUserFilter(value: string | null): AdminUserFilter {
+  if (!value) {
+    return "all";
+  }
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "all" ||
+    normalized === "active" ||
+    normalized === "banned" ||
+    normalized === "online"
+  ) {
+    return normalized;
+  }
+  throw new HttpError(400, "filter must be all, active, banned, or online");
+}
+
+async function fetchOnlineUserIds(ctx: AppContext): Promise<Set<string>> {
+  const nowMs = Date.now();
+  const thresholdIso = new Date(nowMs - ONLINE_WINDOW_MS).toISOString();
+  const sessions = await ctx.supabase
+    .from("sessions")
+    .select("user_id,expires_at,last_active")
+    .gte("last_active", thresholdIso)
+    .limit(5_000);
+
+  if (sessions.error) {
+    throw new HttpError(500, "Failed to fetch active sessions", { expose: false });
+  }
+
+  return new Set(
+    (sessions.data ?? [])
+      .filter((session) => {
+        if (!session.expires_at) {
+          return true;
+        }
+        const expiresMs = Date.parse(session.expires_at);
+        return Number.isFinite(expiresMs) && expiresMs > nowMs;
+      })
+      .map((session) => session.user_id),
+  );
 }
 
 async function logAdminAction(
@@ -396,6 +440,7 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
   requireAdmin(ctx);
 
   const url = new URL(ctx.request.url);
+  const filter = parseAdminUserFilter(url.searchParams.get("filter"));
   const limit = parsePositiveIntParam(url.searchParams.get("limit"), {
     min: 1,
     max: 200,
@@ -403,26 +448,74 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
     invalidMessage: "limit must be between 1 and 200",
   });
   const queryText = (url.searchParams.get("q") ?? "").trim();
+  const onlineUserIds = await fetchOnlineUserIds(ctx);
 
-  let query = ctx.supabase
-    .from("users")
-    .select(
-      "id,username,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
-    )
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const runUsersQuery = async (selectClause: string) => {
+    let query = ctx.supabase
+      .from("users")
+      .select(selectClause)
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
-  if (queryText) {
-    query = query.ilike("username", `%${escapeLikePattern(queryText)}%`);
+    if (queryText) {
+      query = query.ilike("username", `%${escapeLikePattern(queryText)}%`);
+    }
+
+    if (filter === "active") {
+      query = query.eq("is_active", true);
+    } else if (filter === "banned") {
+      query = query.eq("is_banned", true);
+    } else if (filter === "online") {
+      const ids = [...onlineUserIds];
+      if (ids.length === 0) {
+        return { data: [], error: null as null };
+      }
+      query = query.in("id", ids);
+    }
+
+    return query;
+  };
+
+  let { data, error } = await runUsersQuery(
+    "id,username,password_hash,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
+  );
+  if (error?.code === "42703") {
+    ({ data, error } = await runUsersQuery(
+      "id,username,password_hash,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned",
+    ));
   }
-
-  const { data, error } = await query;
   if (error) {
     throw new HttpError(500, "Failed to fetch users", { expose: false });
   }
+  const users = (data ?? []) as unknown as Array<{
+    id: string;
+    username: string;
+    password_hash?: string | null;
+    recovery_key_hash: string;
+    created_at: string;
+    trust_score: number;
+    is_active?: boolean;
+    is_banned?: boolean;
+    is_shadow_banned?: boolean;
+    bio?: string | null;
+    avatar_url?: string | null;
+  }>;
 
   return jsonResponse({
-    users: data ?? [],
+    users: users.map((user) => ({
+      id: user.id,
+      username: user.username,
+      password_hash: user.password_hash ?? null,
+      recovery_key_hash: user.recovery_key_hash,
+      created_at: user.created_at,
+      trust_score: user.trust_score,
+      is_active: Boolean(user.is_active),
+      is_banned: Boolean(user.is_banned),
+      is_shadow_banned: Boolean(user.is_shadow_banned),
+      bio: user.bio ?? null,
+      avatar_url: user.avatar_url ?? null,
+      is_online: onlineUserIds.has(user.id),
+    })),
   });
 }
 
