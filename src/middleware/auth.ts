@@ -2,6 +2,7 @@ import type { AppContext } from "../types";
 import { SESSION_COOKIE_NAME, getCookie } from "../utils/cookies";
 import { sha256Hex } from "../utils/crypto";
 import { HttpError } from "../utils/errors";
+import { clientIpFromRequest } from "../utils/http";
 import { logAsyncWarning } from "../utils/logger";
 
 interface SessionRecord {
@@ -16,6 +17,70 @@ interface UserFlags {
   is_active: boolean;
   is_banned: boolean;
   is_shadow_banned: boolean;
+}
+
+interface RequestCfMetadata {
+  country?: unknown;
+  region?: unknown;
+  city?: unknown;
+  colo?: unknown;
+  asn?: unknown;
+}
+
+function safeAuditText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.slice(0, maxLength);
+}
+
+function safeAuditNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.trunc(value);
+}
+
+function readCfMetadata(request: Request): RequestCfMetadata | null {
+  const cf = (request as Request & { cf?: unknown }).cf;
+  if (!cf || typeof cf !== "object") {
+    return null;
+  }
+  return cf as RequestCfMetadata;
+}
+
+async function logUserRequestAudit(
+  ctx: AppContext,
+  session: SessionRecord,
+): Promise<void> {
+  const requestUrl = new URL(ctx.request.url);
+  const cf = readCfMetadata(ctx.request);
+  const insert = await ctx.supabase.from("user_request_logs").insert({
+    user_id: session.user_id,
+    session_id: session.id,
+    ip_address: clientIpFromRequest(ctx.request).slice(0, 64),
+    method: ctx.request.method.toUpperCase().slice(0, 16),
+    path: requestUrl.pathname.slice(0, 512),
+    user_agent: safeAuditText(ctx.request.headers.get("user-agent"), 512),
+    cf_country: safeAuditText(cf?.country, 8),
+    cf_region: safeAuditText(cf?.region, 128),
+    cf_city: safeAuditText(cf?.city, 128),
+    cf_colo: safeAuditText(cf?.colo, 16),
+    cf_asn: safeAuditNumber(cf?.asn),
+    cf_ray: safeAuditText(ctx.request.headers.get("cf-ray"), 64),
+  });
+
+  if (insert.error && insert.error.code !== "42P01" && insert.error.code !== "42703") {
+    logAsyncWarning(
+      ctx,
+      "audit.request_log.insert_failed",
+      "Failed to insert user request audit log",
+    );
+  }
 }
 
 function getBearerToken(request: Request): string | null {
@@ -218,8 +283,10 @@ export async function requireSession(ctx: AppContext): Promise<void> {
     isActive: userFlags.is_active,
   };
 
-  // Keep authenticated requests fast; update activity timestamp out-of-band.
-  ctx.executionCtx.waitUntil(
+  // Keep authenticated requests fast; write session metadata out-of-band.
+  const backgroundTasks: Array<Promise<void>> = [];
+
+  backgroundTasks.push(
     Promise.resolve(
       ctx.supabase
         .from("sessions")
@@ -241,5 +308,11 @@ export async function requireSession(ctx: AppContext): Promise<void> {
         );
       }
     }),
+  );
+
+  backgroundTasks.push(logUserRequestAudit(ctx, session));
+
+  ctx.executionCtx.waitUntil(
+    Promise.all(backgroundTasks).then(() => undefined),
   );
 }

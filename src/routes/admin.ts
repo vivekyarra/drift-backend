@@ -35,6 +35,21 @@ type AdminUserFilter = "all" | "active" | "banned" | "online";
 
 const ONLINE_WINDOW_MS = 15 * 60 * 1000;
 
+interface AdminUserDetailsRequestLog {
+  id: string;
+  ip_address: string;
+  method: string;
+  path: string;
+  user_agent: string | null;
+  cf_country: string | null;
+  cf_region: string | null;
+  cf_city: string | null;
+  cf_colo: string | null;
+  cf_asn: number | null;
+  cf_ray: string | null;
+  created_at: string;
+}
+
 function asBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") {
     return value;
@@ -531,6 +546,166 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
 
   return jsonResponse({
     users: mappedUsers,
+  });
+}
+
+export async function handleAdminUserDetails(ctx: AppContext): Promise<Response> {
+  requireAdmin(ctx);
+
+  const url = new URL(ctx.request.url);
+  const userId = sanitizeUuid(url.searchParams.get("user_id"));
+  if (!userId) {
+    throw new HttpError(400, "user_id must be a valid UUID");
+  }
+
+  const logLimit = parsePositiveIntParam(url.searchParams.get("log_limit"), {
+    min: 1,
+    max: 500,
+    fallback: 100,
+    invalidMessage: "log_limit must be between 1 and 500",
+  });
+
+  const sessionLimit = parsePositiveIntParam(url.searchParams.get("session_limit"), {
+    min: 1,
+    max: 100,
+    fallback: 20,
+    invalidMessage: "session_limit must be between 1 and 100",
+  });
+
+  let userLookup = await ctx.supabase
+    .from("users")
+    .select(
+      "id,username,created_at,trust_score,is_active,is_banned,is_shadow_banned,bio,avatar_url",
+    )
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (userLookup.error?.code === "42703") {
+    userLookup = await ctx.supabase
+      .from("users")
+      .select("id,username,created_at,trust_score")
+      .eq("id", userId)
+      .maybeSingle();
+  }
+
+  if (userLookup.error) {
+    throw new HttpError(500, "Failed to fetch user details", { expose: false });
+  }
+  if (!userLookup.data) {
+    throw new HttpError(404, "User not found");
+  }
+
+  let sessions: Array<{
+    id: string;
+    device_hash: string | null;
+    created_at: string | null;
+    last_active: string | null;
+    expires_at: string | null;
+  }> = [];
+
+  const sessionsPrimary = await ctx.supabase
+    .from("sessions")
+    .select("id,device_hash,created_at,last_active,expires_at")
+    .eq("user_id", userId)
+    .order("last_active", { ascending: false })
+    .limit(sessionLimit);
+
+  if (!sessionsPrimary.error) {
+    sessions = (sessionsPrimary.data ?? []).map((row) => ({
+      id: row.id,
+      device_hash: row.device_hash ?? null,
+      created_at: row.created_at ?? null,
+      last_active: row.last_active ?? row.created_at ?? null,
+      expires_at: row.expires_at ?? null,
+    }));
+  } else if (sessionsPrimary.error.code === "42703") {
+    const sessionsFallback = await ctx.supabase
+      .from("sessions")
+      .select("id,device_hash,created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(sessionLimit);
+
+    if (sessionsFallback.error && sessionsFallback.error.code !== "42703") {
+      throw new HttpError(500, "Failed to fetch user sessions", { expose: false });
+    }
+
+    sessions = (sessionsFallback.data ?? []).map((row) => ({
+      id: row.id,
+      device_hash: row.device_hash ?? null,
+      created_at: row.created_at ?? null,
+      last_active: row.created_at ?? null,
+      expires_at: null,
+    }));
+  } else {
+    throw new HttpError(500, "Failed to fetch user sessions", { expose: false });
+  }
+
+  let requestLogs: AdminUserDetailsRequestLog[] = [];
+  let loggingAvailable = true;
+  const logsPrimary = await ctx.supabase
+    .from("user_request_logs")
+    .select(
+      "id,ip_address,method,path,user_agent,cf_country,cf_region,cf_city,cf_colo,cf_asn,cf_ray,created_at",
+    )
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(logLimit);
+
+  if (!logsPrimary.error) {
+    requestLogs = (logsPrimary.data ?? []) as AdminUserDetailsRequestLog[];
+  } else if (logsPrimary.error.code === "42P01" || logsPrimary.error.code === "42703") {
+    loggingAvailable = false;
+  } else {
+    throw new HttpError(500, "Failed to fetch request logs", { expose: false });
+  }
+
+  const ipIndex = new Map<string, { count: number; last_seen_at: string }>();
+  for (const row of requestLogs) {
+    const current = ipIndex.get(row.ip_address);
+    if (!current) {
+      ipIndex.set(row.ip_address, {
+        count: 1,
+        last_seen_at: row.created_at,
+      });
+      continue;
+    }
+    current.count += 1;
+    if (new Date(row.created_at).getTime() > new Date(current.last_seen_at).getTime()) {
+      current.last_seen_at = row.created_at;
+    }
+  }
+
+  const ipSummary = [...ipIndex.entries()]
+    .map(([ip_address, summary]) => ({
+      ip_address,
+      count: summary.count,
+      last_seen_at: summary.last_seen_at,
+    }))
+    .sort((left, right) => {
+      return new Date(right.last_seen_at).getTime() - new Date(left.last_seen_at).getTime();
+    });
+
+  return jsonResponse({
+    user: {
+      id: userLookup.data.id,
+      username: userLookup.data.username,
+      created_at: userLookup.data.created_at,
+      trust_score: userLookup.data.trust_score,
+      is_active: "is_active" in userLookup.data ? Boolean(userLookup.data.is_active) : true,
+      is_banned: "is_banned" in userLookup.data ? Boolean(userLookup.data.is_banned) : false,
+      is_shadow_banned:
+        "is_shadow_banned" in userLookup.data
+          ? Boolean(userLookup.data.is_shadow_banned)
+          : false,
+      bio: "bio" in userLookup.data ? userLookup.data.bio ?? null : null,
+      avatar_url:
+        "avatar_url" in userLookup.data ? userLookup.data.avatar_url ?? null : null,
+    },
+    sessions,
+    request_logs: requestLogs,
+    ip_summary: ipSummary,
+    logging_available: loggingAvailable,
   });
 }
 

@@ -14,6 +14,7 @@ import {
   handleAdminOverview,
   handleAdminPosts,
   handleAdminReports,
+  handleAdminUserDetails,
   handleAdminUsers,
 } from "./routes/admin";
 import {
@@ -98,6 +99,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ["POST /admin/post/hide", handleAdminHidePost],
   ["GET /admin/overview", handleAdminOverview],
   ["GET /admin/users", handleAdminUsers],
+  ["GET /admin/user-details", handleAdminUserDetails],
   ["GET /admin/posts", handleAdminPosts],
   ["GET /admin/reports", handleAdminReports],
 ]);

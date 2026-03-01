@@ -621,6 +621,65 @@ export interface Database {
           },
         ];
       };
+      user_request_logs: {
+        Row: {
+          id: string;
+          user_id: string;
+          session_id: string | null;
+          ip_address: string;
+          method: string;
+          path: string;
+          user_agent: string | null;
+          cf_country: string | null;
+          cf_region: string | null;
+          cf_city: string | null;
+          cf_colo: string | null;
+          cf_asn: number | null;
+          cf_ray: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          session_id?: string | null;
+          ip_address: string;
+          method: string;
+          path: string;
+          user_agent?: string | null;
+          cf_country?: string | null;
+          cf_region?: string | null;
+          cf_city?: string | null;
+          cf_colo?: string | null;
+          cf_asn?: number | null;
+          cf_ray?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          session_id?: string | null;
+          ip_address?: string;
+          method?: string;
+          path?: string;
+          user_agent?: string | null;
+          cf_country?: string | null;
+          cf_region?: string | null;
+          cf_city?: string | null;
+          cf_colo?: string | null;
+          cf_asn?: number | null;
+          cf_ray?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "user_request_logs_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
