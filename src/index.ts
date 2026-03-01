@@ -17,6 +17,7 @@ import {
   handleAdminUsers,
 } from "./routes/admin";
 import {
+  handleChangePassword,
   handleDeactivateAccount,
   handleDeleteAccount,
   handleRotateRecoveryKey,
@@ -83,6 +84,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ["GET /profile", handleProfile],
   ["PATCH /profile", handleUpdateProfile],
   ["POST /account/recovery/rotate", handleRotateRecoveryKey],
+  ["POST /account/password/change", handleChangePassword],
   ["POST /account/deactivate", handleDeactivateAccount],
   ["DELETE /account", handleDeleteAccount],
   ["GET /follow", handleFollowData],
@@ -228,13 +230,17 @@ function handleError(params: {
     return jsonResponse(responseBody, error.status);
   }
 
+  const unhandledName = error instanceof Error ? error.name : "UnknownError";
+  const unhandledMessage =
+    error instanceof Error ? error.message : "Unknown non-Error exception";
+
   logInternalError({
     requestId,
     method: request.method,
     path: url.pathname,
     status: 500,
     code: "UNHANDLED_ERROR",
-    message: "Unhandled internal error",
+    message: `${unhandledName}: ${unhandledMessage}`,
   });
   return jsonResponse({ error: "Internal server error" }, 500);
 }

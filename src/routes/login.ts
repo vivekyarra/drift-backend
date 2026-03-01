@@ -18,7 +18,8 @@ interface LoginRequestBody {
 interface LoginUserRecord {
   id: string;
   username?: string | null;
-  password_hash: string | null;
+  password_hash?: string | null;
+  recovery_key_hash?: string | null;
   is_active?: boolean;
   is_banned?: boolean;
 }
@@ -40,17 +41,31 @@ async function fetchUserByUsername(
   }
 
   if (primary.error.code === "42703") {
-    const fallback = await ctx.supabase
+    const fallbackWithPasswordHash = await ctx.supabase
       .from("users")
       .select("id,username,password_hash")
       .eq("username", username)
       .maybeSingle();
 
-    if (fallback.error) {
-      throw new HttpError(500, "Failed to fetch user", { expose: false });
+    if (!fallbackWithPasswordHash.error) {
+      return fallbackWithPasswordHash.data;
     }
 
-    return fallback.data;
+    if (fallbackWithPasswordHash.error.code === "42703") {
+      const legacyFallback = await ctx.supabase
+        .from("users")
+        .select("id,username,recovery_key_hash")
+        .eq("username", username)
+        .maybeSingle();
+
+      if (legacyFallback.error) {
+        throw new HttpError(500, "Failed to fetch user", { expose: false });
+      }
+
+      return legacyFallback.data;
+    }
+
+    throw new HttpError(500, "Failed to fetch user", { expose: false });
   }
 
   throw new HttpError(500, "Failed to fetch user", { expose: false });
@@ -113,7 +128,8 @@ export async function handleLogin(ctx: AppContext): Promise<Response> {
   }
 
   const user = await fetchUserByUsername(ctx, username);
-  if (!user || !user.password_hash) {
+  const storedHash = user?.password_hash ?? user?.recovery_key_hash ?? null;
+  if (!user || !storedHash) {
     throw new HttpError(401, "Invalid credentials");
   }
 
@@ -125,7 +141,7 @@ export async function handleLogin(ctx: AppContext): Promise<Response> {
     throw new HttpError(403, "Account banned");
   }
 
-  const isValidPassword = await verifyPassword(password, user.password_hash);
+  const isValidPassword = await verifyPassword(password, storedHash);
   if (!isValidPassword) {
     throw new HttpError(401, "Invalid credentials");
   }

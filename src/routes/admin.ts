@@ -485,6 +485,11 @@ export async function handleAdminUsers(ctx: AppContext): Promise<Response> {
       "id,username,password_hash,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned",
     ));
   }
+  if (error?.code === "42703") {
+    ({ data, error } = await runUsersQuery(
+      "id,username,recovery_key_hash,created_at,trust_score,is_active,is_banned,is_shadow_banned",
+    ));
+  }
   if (error) {
     throw new HttpError(500, "Failed to fetch users", { expose: false });
   }

@@ -22,6 +22,80 @@ function isUniqueViolation(errorCode: string | undefined): boolean {
   return errorCode === "23505";
 }
 
+async function insertUserWithAuthFallback(
+  ctx: AppContext,
+  params: {
+    username: string;
+    passwordHash: string;
+    passwordCiphertext: string | null;
+  },
+): Promise<{ id: string }> {
+  const fullInsert = await ctx.supabase
+    .from("users")
+    .insert({
+      username: params.username,
+      recovery_key_hash: await sha256Hex(generateSecureToken(48)),
+      password_hash: params.passwordHash,
+      password_ciphertext: params.passwordCiphertext,
+      trust_score: 100,
+    })
+    .select("id")
+    .single();
+
+  if (!fullInsert.error && fullInsert.data) {
+    return fullInsert.data;
+  }
+
+  if (fullInsert.error && isUniqueViolation(fullInsert.error.code)) {
+    throw new HttpError(409, "Username is already taken");
+  }
+
+  // Missing password_ciphertext column fallback.
+  if (fullInsert.error?.code === "42703") {
+    const noCipherInsert = await ctx.supabase
+      .from("users")
+      .insert({
+        username: params.username,
+        recovery_key_hash: await sha256Hex(generateSecureToken(48)),
+        password_hash: params.passwordHash,
+        trust_score: 100,
+      })
+      .select("id")
+      .single();
+
+    if (!noCipherInsert.error && noCipherInsert.data) {
+      return noCipherInsert.data;
+    }
+
+    if (noCipherInsert.error && isUniqueViolation(noCipherInsert.error.code)) {
+      throw new HttpError(409, "Username is already taken");
+    }
+
+    // Legacy schema fallback: no password_hash column; store password hash in recovery_key_hash.
+    if (noCipherInsert.error?.code === "42703") {
+      const legacyInsert = await ctx.supabase
+        .from("users")
+        .insert({
+          username: params.username,
+          recovery_key_hash: params.passwordHash,
+          trust_score: 100,
+        })
+        .select("id")
+        .single();
+
+      if (!legacyInsert.error && legacyInsert.data) {
+        return legacyInsert.data;
+      }
+
+      if (legacyInsert.error && isUniqueViolation(legacyInsert.error.code)) {
+        throw new HttpError(409, "Username is already taken");
+      }
+    }
+  }
+
+  throw new HttpError(500, "Failed to create user", { expose: false });
+}
+
 export async function handleRegister(ctx: AppContext): Promise<Response> {
   const body = await parseJsonBody<RegisterRequestBody>(ctx.request);
   const username = sanitizeUsername(body.username);
@@ -37,8 +111,6 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
     throw new HttpError(400, "Password must be 8-128 characters");
   }
 
-  // Keep a non-null recovery key hash for backward-compatible schema usage.
-  const recoveryKeyHash = await sha256Hex(generateSecureToken(48));
   const passwordHash = await hashPassword(password);
   const passwordCiphertext = ctx.config.adminPasswordEncryptionKey
     ? await encryptPasswordForAdmin(password, ctx.config.adminPasswordEncryptionKey)
@@ -50,33 +122,11 @@ export async function handleRegister(ctx: AppContext): Promise<Response> {
   const deviceHash = await hashDeviceFingerprint(ctx.request);
   const sessionExpiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString();
 
-  const insertUser = async (withCiphertext: boolean) =>
-    ctx.supabase
-      .from("users")
-      .insert({
-        username,
-        recovery_key_hash: recoveryKeyHash,
-        password_hash: passwordHash,
-        ...(withCiphertext ? { password_ciphertext: passwordCiphertext } : {}),
-        trust_score: 100,
-      })
-      .select("id")
-      .single();
-
-  let { data: user, error: userInsertError } = await insertUser(true);
-  if (userInsertError?.code === "42703") {
-    ({ data: user, error: userInsertError } = await insertUser(false));
-  }
-
-  if (userInsertError) {
-    if (isUniqueViolation(userInsertError.code)) {
-      throw new HttpError(409, "Username is already taken");
-    }
-    throw new HttpError(500, "Failed to create user", { expose: false });
-  }
-  if (!user) {
-    throw new HttpError(500, "Failed to create user", { expose: false });
-  }
+  const user = await insertUserWithAuthFallback(ctx, {
+    username,
+    passwordHash,
+    passwordCiphertext,
+  });
 
   const sessionInsertWithExpiry = await ctx.supabase.from("sessions").insert({
     user_id: user.id,

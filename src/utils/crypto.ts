@@ -4,7 +4,9 @@ const BYTE_LIMIT =
   Math.floor(256 / TOKEN_ALPHABET.length) * TOKEN_ALPHABET.length;
 const textEncoder = new TextEncoder();
 const PASSWORD_HASH_PREFIX = "pbkdf2_sha256";
-const PASSWORD_HASH_ITERATIONS = 210_000;
+// Cloudflare Workers currently supports PBKDF2 iterations up to 100000.
+const PASSWORD_HASH_ITERATIONS = 100_000;
+const PASSWORD_HASH_MAX_ITERATIONS = 100_000;
 const PASSWORD_HASH_SALT_BYTES = 16;
 const PASSWORD_HASH_KEY_BYTES = 32;
 const PASSWORD_CIPHER_PREFIX = "aesgcm_v1";
@@ -156,7 +158,11 @@ export async function verifyPassword(
   }
 
   const iterations = Number.parseInt(parts[1], 10);
-  if (!Number.isFinite(iterations) || iterations < 100_000 || iterations > 1_000_000) {
+  if (
+    !Number.isFinite(iterations) ||
+    iterations < PASSWORD_HASH_ITERATIONS ||
+    iterations > PASSWORD_HASH_MAX_ITERATIONS
+  ) {
     return false;
   }
 
