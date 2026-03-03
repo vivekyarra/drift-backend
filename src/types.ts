@@ -229,6 +229,7 @@ export interface Database {
           content_type: string;
           content_id: string;
           reporter_id: string | null;
+          reason: string | null;
           created_at: string;
         };
         Insert: {
@@ -236,6 +237,7 @@ export interface Database {
           content_type: string;
           content_id: string;
           reporter_id?: string | null;
+          reason?: string | null;
           created_at?: string;
         };
         Update: {
@@ -243,6 +245,7 @@ export interface Database {
           content_type?: string;
           content_id?: string;
           reporter_id?: string | null;
+          reason?: string | null;
           created_at?: string;
         };
         Relationships: [

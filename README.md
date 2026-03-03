@@ -22,6 +22,7 @@ Frontend never talks directly to Supabase for auth/session operations.
 - Reactions, saves, comments, reports
 - Admin moderation APIs
 - Admin personal-details API (IP/activity audit view)
+- Admin post-expiry control + storage usage telemetry
 
 ## Security Controls
 - Strict single-origin CORS
@@ -76,6 +77,7 @@ Frontend never talks directly to Supabase for auth/session operations.
 - `GET /admin/posts`
 - `POST /admin/post/hide`
 - `POST /admin/post/delete`
+- `POST /admin/post-expiry`
 - `GET /admin/reports`
 
 ## Environment Variables
@@ -90,6 +92,7 @@ Optional:
 - `CLOUDINARY_API_SECRET`
 - `ADMIN_API_KEY`
 - `ADMIN_PASSWORD_ENCRYPTION_KEY`
+- `SUPABASE_DB_LIMIT_BYTES` (optional quota display for admin storage widget)
 
 ## Local Development
 ```bash
@@ -141,8 +144,11 @@ Apply in order under `backend/supabase/migrations`:
 7. `007_phase6_password_auth.sql`
 8. `008_phase7_password_ciphertext.sql`
 9. `009_phase8_user_request_audit_logs.sql`
+10. `010_phase9_admin_platform_settings.sql`
+11. `011_phase10_report_reason.sql`
 
 `009_phase8_user_request_audit_logs.sql` is required for admin personal details (IP/audit view).
+`010_phase9_admin_platform_settings.sql` is required for admin post-expiry control and Supabase usage stats.
 
 ## Repository
 - GitHub: https://github.com/vivekyarra/drift-backend

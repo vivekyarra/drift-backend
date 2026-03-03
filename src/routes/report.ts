@@ -4,13 +4,14 @@ import type { AppContext } from "../types";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody } from "../utils/http";
 import { createNotification } from "../utils/notifications";
-import { sanitizeUuid } from "../utils/sanitize";
+import { sanitizeContent, sanitizeUuid } from "../utils/sanitize";
 
 type ReportableContentType = "post" | "comment";
 
 interface ReportRequestBody {
   content_type?: unknown;
   content_id?: unknown;
+  reason?: unknown;
 }
 
 interface ReportableRecord {
@@ -32,6 +33,28 @@ function sanitizeContentType(value: unknown): ReportableContentType | null {
   }
 
   return null;
+}
+
+function sanitizeReportReason(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new HttpError(400, "reason must be a string");
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const sanitized = sanitizeContent(trimmed, 500);
+  if (!sanitized) {
+    throw new HttpError(400, "reason must be 1-500 characters");
+  }
+
+  return sanitized;
 }
 
 async function reportAlreadyExists(
@@ -58,19 +81,36 @@ async function insertReport(
   ctx: AppContext,
   contentType: ReportableContentType,
   contentId: string,
+  reason: string | null,
 ): Promise<boolean> {
-  const { error } = await ctx.supabase.from("reports").insert({
+  const primaryInsert = await ctx.supabase.from("reports").insert({
     content_type: contentType,
     content_id: contentId,
     reporter_id: ctx.session!.userId,
+    reason,
   });
 
-  if (!error) {
+  if (!primaryInsert.error) {
     return false;
   }
 
-  if (error.code === "23505") {
+  if (primaryInsert.error.code === "23505") {
     return true;
+  }
+  if (primaryInsert.error.code === "42703") {
+    const fallbackInsert = await ctx.supabase.from("reports").insert({
+      content_type: contentType,
+      content_id: contentId,
+      reporter_id: ctx.session!.userId,
+    });
+
+    if (!fallbackInsert.error) {
+      return false;
+    }
+
+    if (fallbackInsert.error.code === "23505") {
+      return true;
+    }
   }
 
   throw new HttpError(500, "Failed to create report", { expose: false });
@@ -170,6 +210,7 @@ export async function handleReportContent(ctx: AppContext): Promise<Response> {
   const body = await parseJsonBody<ReportRequestBody>(ctx.request);
   const contentType = sanitizeContentType(body.content_type);
   const contentId = sanitizeUuid(body.content_id);
+  const reason = sanitizeReportReason(body.reason);
 
   if (!contentType) {
     throw new HttpError(400, "content_type must be one of: post, comment");
@@ -200,7 +241,7 @@ export async function handleReportContent(ctx: AppContext): Promise<Response> {
     });
   }
 
-  const duplicateFromInsert = await insertReport(ctx, contentType, contentId);
+  const duplicateFromInsert = await insertReport(ctx, contentType, contentId, reason);
   if (duplicateFromInsert) {
     return jsonResponse({
       success: true,

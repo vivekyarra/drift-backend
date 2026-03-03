@@ -856,22 +856,47 @@ export async function handleAdminReports(ctx: AppContext): Promise<Response> {
     throw new HttpError(400, "content_type must be post or comment");
   }
 
-  let query = ctx.supabase
-    .from("reports")
-    .select("id,content_type,content_id,reporter_id,created_at")
-    .order("created_at", { ascending: false })
-    .limit(limit);
+  const runReportsQuery = async (withReason: boolean) => {
+    let query = (ctx.supabase.from("reports") as any)
+      .select(
+        withReason
+          ? "id,content_type,content_id,reporter_id,reason,created_at"
+          : "id,content_type,content_id,reporter_id,created_at",
+      )
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
-  if (contentType) {
-    query = query.eq("content_type", contentType);
+    if (contentType) {
+      query = query.eq("content_type", contentType);
+    }
+
+    return query;
+  };
+
+  let { data, error } = await runReportsQuery(true);
+  if (error?.code === "42703") {
+    ({ data, error } = await runReportsQuery(false));
   }
-
-  const { data, error } = await query;
   if (error) {
     throw new HttpError(500, "Failed to fetch reports", { expose: false });
   }
+  const reports = (data ?? []) as Array<{
+    id: string;
+    content_type: string;
+    content_id: string;
+    reporter_id: string | null;
+    created_at: string;
+    reason?: string | null;
+  }>;
 
   return jsonResponse({
-    reports: data ?? [],
+    reports: reports.map((report) => ({
+      id: report.id,
+      content_type: report.content_type,
+      content_id: report.content_id,
+      reporter_id: report.reporter_id,
+      reason: report.reason ?? null,
+      created_at: report.created_at,
+    })),
   });
 }
