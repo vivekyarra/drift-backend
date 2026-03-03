@@ -12,7 +12,8 @@ export function getConfig(env: Env): AppConfig {
   const rawCloudinaryApiSecret = env.CLOUDINARY_API_SECRET?.trim();
   const rawAdminApiKey = env.ADMIN_API_KEY?.trim();
   const rawAdminPasswordEncryptionKey = env.ADMIN_PASSWORD_ENCRYPTION_KEY?.trim();
-  const rawKey = `${rawUrl ?? ""}|${rawServiceKey ?? ""}|${rawFrontendOrigin ?? ""}|${rawCloudinaryCloudName ?? ""}|${rawCloudinaryApiKey ?? ""}|${rawCloudinaryApiSecret ?? ""}|${rawAdminApiKey ?? ""}|${rawAdminPasswordEncryptionKey ?? ""}`;
+  const rawSupabaseDbLimitBytes = env.SUPABASE_DB_LIMIT_BYTES?.trim();
+  const rawKey = `${rawUrl ?? ""}|${rawServiceKey ?? ""}|${rawFrontendOrigin ?? ""}|${rawCloudinaryCloudName ?? ""}|${rawCloudinaryApiKey ?? ""}|${rawCloudinaryApiSecret ?? ""}|${rawAdminApiKey ?? ""}|${rawAdminPasswordEncryptionKey ?? ""}|${rawSupabaseDbLimitBytes ?? ""}`;
 
   if (cachedConfig && rawKey === cachedRawKey) {
     return cachedConfig;
@@ -46,6 +47,15 @@ export function getConfig(env: Env): AppConfig {
     );
   }
 
+  let supabaseDbLimitBytes: number | null = null;
+  if (rawSupabaseDbLimitBytes) {
+    const parsed = Number.parseInt(rawSupabaseDbLimitBytes, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error("SUPABASE_DB_LIMIT_BYTES must be a positive integer (bytes)");
+    }
+    supabaseDbLimitBytes = parsed;
+  }
+
   cachedConfig = {
     supabaseUrl: rawUrl,
     supabaseServiceRoleKey: rawServiceKey,
@@ -55,6 +65,7 @@ export function getConfig(env: Env): AppConfig {
     cloudinaryApiSecret: rawCloudinaryApiSecret ?? null,
     adminApiKey: rawAdminApiKey ?? null,
     adminPasswordEncryptionKey: rawAdminPasswordEncryptionKey ?? null,
+    supabaseDbLimitBytes,
   };
   cachedRawKey = rawKey;
 

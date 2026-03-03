@@ -13,6 +13,7 @@ import {
   sanitizeImageUrl,
   sanitizeVideoUrl,
 } from "../utils/sanitize";
+import { computePostExpiresAt, readPostExpiryMode } from "../utils/postSettings";
 
 interface CreatePostRequestBody {
   channel?: unknown;
@@ -21,8 +22,6 @@ interface CreatePostRequestBody {
   video_url?: unknown;
   image_blurhash?: unknown;
 }
-
-const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
 
 function sanitizeImageBlurhash(value: unknown): string | null {
   if (value === undefined || value === null) {
@@ -119,7 +118,8 @@ export async function handleCreatePost(ctx: AppContext): Promise<Response> {
     throw new HttpError(400, "Unable to derive Cloudinary public_id from video_url");
   }
 
-  const expiresAt = new Date(Date.now() + FIFTEEN_DAYS_MS).toISOString();
+  const postExpiryMode = await readPostExpiryMode(ctx);
+  const expiresAt = computePostExpiresAt(postExpiryMode);
   const fullInsert = await ctx.supabase
     .from("posts")
     .insert({

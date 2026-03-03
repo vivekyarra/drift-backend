@@ -14,6 +14,7 @@ import {
   handleAdminOverview,
   handleAdminPosts,
   handleAdminReports,
+  handleAdminSetPostExpiry,
   handleAdminUserDetails,
   handleAdminUsers,
 } from "./routes/admin";
@@ -97,6 +98,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ["DELETE /admin/user", handleAdminDeleteUser],
   ["POST /admin/post/delete", handleAdminDeletePost],
   ["POST /admin/post/hide", handleAdminHidePost],
+  ["POST /admin/post-expiry", handleAdminSetPostExpiry],
   ["GET /admin/overview", handleAdminOverview],
   ["GET /admin/users", handleAdminUsers],
   ["GET /admin/user-details", handleAdminUserDetails],

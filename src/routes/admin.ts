@@ -10,7 +10,16 @@ import { decryptPasswordForAdmin } from "../utils/crypto";
 import { HttpError } from "../utils/errors";
 import { jsonResponse, parseJsonBody, parsePositiveIntParam } from "../utils/http";
 import { logAsyncWarning } from "../utils/logger";
+import {
+  parsePostExpiryMode,
+  readPostExpiryMode,
+  writePostExpiryMode,
+} from "../utils/postSettings";
 import { sanitizeUuid } from "../utils/sanitize";
+import {
+  fetchCloudinaryStorageUsage,
+  fetchSupabaseStorageUsage,
+} from "../utils/storageUsage";
 
 interface ModerateUserRequestBody {
   user_id?: unknown;
@@ -29,6 +38,10 @@ interface AdminHidePostRequestBody {
 
 interface AdminDeleteUserRequestBody {
   user_id?: unknown;
+}
+
+interface AdminSetPostExpiryRequestBody {
+  mode?: unknown;
 }
 
 type AdminUserFilter = "all" | "active" | "banned" | "online";
@@ -395,6 +408,9 @@ export async function handleAdminOverview(ctx: AppContext): Promise<Response> {
     hiddenPostsResult,
     totalReportsResult,
     recentSessionsResult,
+    postExpiryMode,
+    supabaseStorage,
+    cloudinaryStorage,
   ] = await Promise.all([
     ctx.supabase.from("users").select("id", { count: "exact", head: true }),
     ctx.supabase
@@ -413,6 +429,9 @@ export async function handleAdminOverview(ctx: AppContext): Promise<Response> {
       .select("user_id,last_active,expires_at")
       .gte("last_active", onlineThresholdIso)
       .limit(5_000),
+    readPostExpiryMode(ctx),
+    fetchSupabaseStorageUsage(ctx),
+    fetchCloudinaryStorageUsage(ctx.config),
   ]);
 
   if (
@@ -449,6 +468,41 @@ export async function handleAdminOverview(ctx: AppContext): Promise<Response> {
       hidden_posts: asCount(hiddenPostsResult.count),
       total_reports: asCount(totalReportsResult.count),
     },
+    settings: {
+      post_expiry_mode: postExpiryMode,
+    },
+    storage: {
+      supabase: {
+        used_bytes: supabaseStorage.usedBytes,
+        limit_bytes: supabaseStorage.limitBytes,
+        available: supabaseStorage.available,
+      },
+      cloudinary: {
+        used_bytes: cloudinaryStorage.usedBytes,
+        limit_bytes: cloudinaryStorage.limitBytes,
+        available: cloudinaryStorage.available,
+      },
+    },
+  });
+}
+
+export async function handleAdminSetPostExpiry(ctx: AppContext): Promise<Response> {
+  requireAdmin(ctx);
+
+  const body = await parseJsonBody<AdminSetPostExpiryRequestBody>(ctx.request);
+  const mode = parsePostExpiryMode(body.mode);
+  if (!mode) {
+    throw new HttpError(400, "mode must be one of: 7d, 15d, 30d, forever");
+  }
+
+  await writePostExpiryMode(ctx, mode);
+  await logAdminAction(ctx, {
+    action: `set_post_expiry:${mode}`,
+  });
+
+  return jsonResponse({
+    success: true,
+    post_expiry_mode: mode,
   });
 }
 

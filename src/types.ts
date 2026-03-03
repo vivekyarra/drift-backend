@@ -9,6 +9,7 @@ export interface Env {
   CLOUDINARY_API_SECRET?: string;
   ADMIN_API_KEY?: string;
   ADMIN_PASSWORD_ENCRYPTION_KEY?: string;
+  SUPABASE_DB_LIMIT_BYTES?: string;
 }
 
 export interface AppConfig {
@@ -20,6 +21,7 @@ export interface AppConfig {
   cloudinaryApiSecret: string | null;
   adminApiKey: string | null;
   adminPasswordEncryptionKey: string | null;
+  supabaseDbLimitBytes: number | null;
 }
 
 export interface Database {
@@ -620,6 +622,24 @@ export interface Database {
             referencedColumns: ["id"];
           },
         ];
+      };
+      app_settings: {
+        Row: {
+          key: string;
+          value_text: string;
+          updated_at: string;
+        };
+        Insert: {
+          key: string;
+          value_text: string;
+          updated_at?: string;
+        };
+        Update: {
+          key?: string;
+          value_text?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
       };
       user_request_logs: {
         Row: {
