@@ -1,42 +1,42 @@
-# Drift Backend (VoidVault API)
+# VoidVault Backend
 
-Production Cloudflare Workers backend for VoidVault.
+Production Cloudflare Workers API for VoidVault.
 
 ## Stack
+
 - Cloudflare Workers (TypeScript)
-- Supabase Postgres (`@supabase/supabase-js`, service-role only)
-- Cookie/session auth (custom, no Supabase Auth)
-- Cloudinary signed upload support (URL-only media flow)
+- Supabase Postgres (service-role, backend only)
+- Custom cookie/session auth
+- Cloudinary (media upload signing)
 
 ## Architecture
-Browser -> Frontend (Pages) -> Worker API -> Supabase + Cloudinary
 
-Frontend never talks directly to Supabase for auth/session operations.
+Frontend (Pages) -> Worker -> Supabase + Cloudinary
 
-## Core Capabilities
-- Username + password auth
-- Session cookies + DB-backed sessions
-- Feed with cursor pagination
-- Follows, chats, notifications
-- Advice flows
-- Reactions, saves, comments, reports
-- Admin moderation APIs
-- Admin personal-details API (IP/activity audit view)
-- Admin post-expiry control + storage usage telemetry
+The frontend never calls Supabase directly. All operations go through this Worker.
 
-## Security Controls
-- Strict single-origin CORS
-- CSRF validation for mutating requests
-- IP rate limiting + abuse controls
+## Auth Model
+
+- Username + password only
+- No email, no OAuth, no third-party identity
+- Sessions are DB-backed with hashed tokens in HTTP-only cookies
+- **No password recovery flow** - password is the only credential. Users who lose their password must create a new account.
+- Passwords are hashed using bcrypt before storage
+
+## Security
+
+- CORS: strict single-origin
+- CSRF: token validation on all mutating requests
+- Rate limiting: per-IP
+- Security headers: CSP, HSTS, X-Frame-Options, Referrer-Policy
 - Input sanitization and body-size limits
-- Security headers (CSP, HSTS, X-Frame-Options, Referrer-Policy, etc.)
-- Service-role DB access only from backend
-- Recovery/session tokens stored hashed in DB
+- Service-role DB key never exposed to frontend
 
-## API Surface
+## API
+
 ### Public
-- `GET /`
-- `GET /username/suggest`
+- `GET /` - health check
+- `GET /username/suggest` - username suggestions
 - `POST /register`
 - `POST /login`
 
@@ -52,89 +52,40 @@ Frontend never talks directly to Supabase for auth/session operations.
 - `GET /notifications`
 - `GET /profile`
 - `PATCH /profile`
-- `GET /follow`
-- `POST /follow`
-- `DELETE /follow`
-- `GET /chat/list`
-- `POST /chat/start`
-- `GET /chat/:conversation_id/messages`
-- `POST /chat/:conversation_id/message`
-- `GET /advice`
-- `POST /advice`
-- `GET /advice/:advice_id/replies`
-- `POST /advice/:advice_id/replies`
-- `POST /account/recovery/rotate`
+- `GET /follow`, `POST /follow`, `DELETE /follow`
+- `GET /chat/list`, `POST /chat/start`
+- `GET /chat/:id/messages`, `POST /chat/:id/message`
+- `GET /advice`, `POST /advice`
+- `GET /advice/:id/replies`, `POST /advice/:id/replies`
 - `POST /account/password/change`
 - `POST /account/deactivate`
 - `DELETE /account`
 
-### Admin (requires `X-Admin-Secret`)
+### Admin (requires `X-Admin-Secret` header)
 - `GET /admin/overview`
-- `GET /admin/users`
-- `GET /admin/user-details`
-- `DELETE /admin/user`
+- `GET /admin/users`, `DELETE /admin/user`
 - `POST /admin/user/moderation`
-- `GET /admin/posts`
-- `POST /admin/post/hide`
-- `POST /admin/post/delete`
-- `POST /admin/post-expiry`
+- `GET /admin/posts`, `POST /admin/post/hide`, `POST /admin/post/delete`
 - `GET /admin/reports`
+- `GET /admin/user-details` (IP/audit view)
 
 ## Environment Variables
-Required:
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `FRONTEND_ORIGIN`
-- `CLOUDINARY_CLOUD_NAME`
 
-Optional:
-- `CLOUDINARY_API_KEY`
-- `CLOUDINARY_API_SECRET`
-- `ADMIN_API_KEY`
-- `ADMIN_PASSWORD_ENCRYPTION_KEY`
-- `SUPABASE_DB_LIMIT_BYTES` (optional quota display for admin storage widget)
-
-## Local Development
-```bash
-cd backend
-npm install
-npm run dev
-```
-
-Use `backend/.dev.vars`:
-```env
-SUPABASE_URL=https://YOUR_PROJECT.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
-FRONTEND_ORIGIN=http://localhost:5173
-CLOUDINARY_CLOUD_NAME=your-cloud-name
-CLOUDINARY_API_KEY=optional
-CLOUDINARY_API_SECRET=optional
-ADMIN_API_KEY=optional
-ADMIN_PASSWORD_ENCRYPTION_KEY=optional_32+_char_secret
-```
-
-## Quality Checks
-```bash
-npm run typecheck
-npm run test
-```
-
-## Deploy
-```bash
-cd backend
-npx wrangler deploy
-```
-
-Set secrets in Cloudflare before production deploy:
-```bash
-wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-wrangler secret put CLOUDINARY_API_SECRET
-wrangler secret put ADMIN_API_KEY
-wrangler secret put ADMIN_PASSWORD_ENCRYPTION_KEY
+Required secrets (set via `wrangler secret put`):
+```text
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+FRONTEND_ORIGIN
+CLOUDINARY_CLOUD_NAME
+CLOUDINARY_API_KEY
+CLOUDINARY_API_SECRET
+ADMIN_API_KEY
+ADMIN_PASSWORD_ENCRYPTION_KEY
 ```
 
 ## Database Migrations
-Apply in order under `backend/supabase/migrations`:
+
+Apply in order from `supabase/migrations/`:
 1. `001_phase1_foundation.sql`
 2. `002_phase2_social_chat.sql`
 3. `003_phase2_moderation_media.sql`
@@ -147,8 +98,24 @@ Apply in order under `backend/supabase/migrations`:
 10. `010_phase9_admin_platform_settings.sql`
 11. `011_phase10_report_reason.sql`
 
-`009_phase8_user_request_audit_logs.sql` is required for admin personal details (IP/audit view).
-`010_phase9_admin_platform_settings.sql` is required for admin post-expiry control and Supabase usage stats.
+## Local Development
 
-## Repository
-- GitHub: https://github.com/vivekyarra/drift-backend
+Create `backend/.dev.vars`:
+```text
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your_key
+FRONTEND_ORIGIN=http://localhost:5173
+CLOUDINARY_CLOUD_NAME=your_name
+```
+
+```bash
+cd backend
+npm install
+npm run dev
+```
+
+## Deploy
+
+```bash
+npx wrangler deploy
+```
